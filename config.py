@@ -92,7 +92,7 @@ DEFAULT_SETTINGS = {
     "use_ai_trailing_stop": False,    # AI Trailing Stop ON/OFF
     "trade_signal_level": "STRONG",      
     "trailing_mode": "AUTO",
-    "trade_signal_ai_enabled": True, # False (OFF) yoki True (ON)
+    "trade_signal_ai_enabled": False, # False (OFF) yoki True (ON)
   
     "enabled_indicators": {
         "ema": True,
