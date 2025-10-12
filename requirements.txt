@@ -15,3 +15,4 @@ pycryptodomex
 python-dotenv 
 requests 
 websockets 
+talib 
