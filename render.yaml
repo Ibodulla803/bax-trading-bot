@@ -1,13 +1,10 @@
-# render.yaml yaratish
-echo "services:
+services:
   - type: worker
     name: trading-bot
     env: python
     plan: free
+    pythonVersion: "3.12.5"
     buildCommand: |
       pip install --upgrade pip setuptools wheel cython
       pip install -r requirements.txt
     startCommand: python main.py
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.5" > render.yaml
