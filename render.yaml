@@ -1,10 +1,9 @@
-services:
-  - type: worker
-    name: trading-bot
-    env: python
-    plan: free
-    pythonVersion: "3.12.5"
-    buildCommand: |
-      pip install --upgrade pip setuptools wheel cython
-      pip install -r requirements.txt
-    startCommand: python main.py
+services: 
+"  - type: worker" 
+"    name: trading-bot" 
+"    env: python" 
+"    plan: free" 
+"    buildCommand: |" 
+"      pip install --upgrade pip setuptools wheel" 
+"      pip install -r requirements.txt" 
+"    startCommand: python main.py" 
