@@ -4,9 +4,7 @@ import sys
 
 # Bax papkasini import yo'liga qo'shish
 sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
-
 from aiohttp import web
-import asyncio
 import logging
 import datetime
 import pytz
@@ -130,58 +128,7 @@ async def check_auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Xato: {str(e)}")
 
-async def handle_ping(request):
-    """Render'dan yoki tashqi servislardan kelgan ping so'roviga javob beradi."""
-    # Bu javobni qaytarish Render'ga botning faol ekanligini bildiradi.
-    return web.Response(text="Bot is running (24/7 Check)!")
 
-async def start_web_server():
-    """Veb-serverni Render taqdim etgan PORTda ishga tushiradi."""
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    
-    # Render'ning PORT muhit o'zgaruvchisi
-    port = int(os.environ.get("PORT", 8080))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    # Render'da 0.0.0.0 adresidan ishlash shart
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    logger.info(f"🌐 Ping Web Server http://0.0.0.0:{port} portida ishga tushirildi.")
-    await site.start()
-
-async def run_bot_tasks(application: Application):
-    """Barcha asinxron vazifalarni (Polling, Trading Loops, Web Server) boshqaradi."""
-    
-    # 1. Web Serverni ishga tushirish (Ping uchun)
-    web_server_task = asyncio.create_task(start_web_server())
-
-    # 2. Telegram Pollingni ishga tushirish
-    await application.initialize()
-    await application.start()
-
-    # application.job_queue.run_once(lambda ctx: start_trading_loops(ctx), when=0)
-    # Trading looplari run_polling() bilan ishga tushgani uchun bu yerda avvalgi logikani ishlatamiz.
-
-    logger.info("✅ Botning barcha asinxron vazifalari ishga tushirildi.")
-
-    # Polling bot to'xtamaguncha to'xtamaydi.
-    # Bu yerda Web serverni to'xtatmaslik uchun barcha vazifalarni kuzatamiz.
-    
-    try:
-        # Polling to'xtatilganda, bu yerda kutish ham tugaydi
-        await application.updater.start_polling(drop_pending_updates=True)
-        await application.updater.start()
-        
-        # Polling ulanishi uzilganida boshqa vazifalar ishda qolishi uchun
-        await asyncio.gather(web_server_task, application.updater.stop_running(), return_exceptions=True)
-        
-    except asyncio.CancelledError:
-        logger.info("Barcha vazifalar to'xtatildi (CancelledError).")
-    finally:
-        # To'g'ri yopish (Graceful Shutdown)
-        await application.stop()
-        await application.shutdown()
 
 
 async def debug_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1521,6 +1468,29 @@ async def setup_bot_tasks(context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.error("API yoki obuna bo'lish uchun instrumentlar topilmadi. Vazifalar ishga tushirilmaydi.")
 
+async def handle_ping(request):
+    """Render'dan yoki tashqi servislardan kelgan ping so'roviga javob beradi."""
+    return web.Response(text="Bot is running (24/7 Uptime Check)!")
+
+async def start_web_server(app: Application):
+    """Veb-serverni Render taqdim etgan PORTda ishga tushiradi va bot yopilganda o'chadi."""
+    web_app = web.Application()
+    web_app.router.add_get('/', handle_ping)
+    
+    port = int(os.environ.get("PORT", 8080))
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    logger.info(f"🌐 Ping Web Server http://0.0.0.0:{port} portida ishga tushirildi.")
+    await site.start()
+    
+    # Bot yopilganda Web serverni ham yopish uchun Event yaratamiz
+    await app.updater.start_polling() # <-- Polling ishga tushgandan keyin kutamiz
+    
+    # Polling to'xtaganida serverni to'xtatish uchun:
+    await site.stop()
+    await runner.cleanup()
+
 # --- REPLACE existing execute_manual_trade with this ---
 async def execute_manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     print(f"DEBUG: Amount received: {update.message.text}")  # ✅ DEBUG
@@ -1858,16 +1828,30 @@ def start_bot():
         when=0
     )
     
-    logger.info("Bot ishga tushirildi.")
+    logger.info("Bot ishga tushirildi. Chiqish uchun Ctrl+C tugmasini bosing.")
 
     try:
-        # Pollingni chaqirish o'rniga, barcha asinxron vazifalarni yagona loopda chaqiramiz
-        asyncio.run(run_bot_tasks(application))
+        # Pollingni ASOSIY loopda ishga tushiramiz (Telegram Polling va Web Server birga ishlashi uchun)
+        # 1. Ping Serverini asinxron vazifa (coroutine) sifatida yaratamiz.
+        # 2. run_polling() Telegram pollingni ishga tushiradi va loopni boshqaradi.
+        
+        # NOTE: run_polling() ning o'zi sinxron usulda asinxron loopni ishga tushiradi.
+        # Biz boshqa asinxron funksiyani (Ping Serverini) unga kirish uchun yaratamiz.
+        
+        # Ping serverini boshlash vazifasini yaratish uchun:
+        loop = asyncio.get_event_loop()
+        web_server_task = loop.create_task(start_web_server(application))
+
+        # Telegram botini ishga tushirish va loopni boshqarish:
+        # close_loop=False - bu avvalgi "Event loop is closed" xatosini tuzatadi
+        application.run_polling(drop_pending_updates=True, close_loop=False)
 
     except KeyboardInterrupt:
         logger.info("Bot to'xtatildi (KeyboardInterrupt).")
     except Exception as e:
         logger.error(f"Kutilmagan xato: {e}")
+        logger.error(f"Kutib turuvchi xato: {e.__class__.__name__}: {e}") # Xato turini ko'rish uchun
+        
 
 if __name__ == "__main__":
     start_bot()
