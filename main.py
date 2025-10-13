@@ -5,6 +5,7 @@ import sys
 # Bax papkasini import yo'liga qo'shish
 sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
 from aiohttp import web
+import asyncio
 import logging
 import datetime
 import pytz
