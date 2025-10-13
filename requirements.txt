@@ -15,3 +15,5 @@ pycryptodomex
 python-dotenv 
 requests 
 websockets 
+# TALIB qo'shildi!
+TA-Lib 
