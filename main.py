@@ -5,6 +5,7 @@ import sys
 # Bax papkasini import yo'liga qo'shish
 sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
 
+import time
 import asyncio
 import logging
 import datetime
@@ -1706,7 +1707,10 @@ async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAUL
 
 def start_bot():
     """Botni boshlaydi."""
-    while True:  # Doimiy restart
+    max_retries = 5
+    retry_count = 0
+    
+    while retry_count < max_retries:
         try:
             application = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -1808,18 +1812,19 @@ def start_bot():
             
             logger.info("Bot ishga tushirildi. Chiqish uchun Ctrl+C tugmasini bosing.")
             
-            try:
-                application.run_polling(drop_pending_updates=True)
-            except KeyboardInterrupt:
-                logger.info("Bot o'chirilmoqda.")
-                break
-            except Exception as e:
-                logger.error(f"Botda xato: {e}. Qayta ishga tushirilmoqda...")
-                time.sleep(10)
-                
+            # Polling ni ishga tushirish
+            application.run_polling(
+                drop_pending_updates=True,
+                close_loop=False,  # Muhim: loop ni yopmaslik
+                stop_signals=None   # Signal larni to'xtatmaslik
+            )
+            
         except Exception as e:
-            logger.error(f"Botni ishga tushirishda xato: {e}. Qayta urinilmoqda...")
-            time.sleep(10)
+            retry_count += 1
+            logger.error(f"Botda xato: {e}. Qayta ishga tushirilmoqda... ({retry_count}/{max_retries})")
+            time.sleep(10)  # 10 soniya kutib, qayta urinish
+            
+    logger.error(f"Bot {max_retries} marta urinishdan keyin ishlamadi. To'xtatildi.")
 
 if __name__ == "__main__":
     start_bot()
