@@ -1706,114 +1706,120 @@ async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAUL
 
 def start_bot():
     """Botni boshlaydi."""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    while True:  # Doimiy restart
+        try:
+            application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Kunlik hisobot
-    application.job_queue.run_repeating(
-        send_daily_summary,
-        interval=datetime.timedelta(hours=24),
-        first=datetime.time(hour=9, minute=0, tzinfo=pytz.timezone('Asia/Tashkent'))
-    )
+            # Kunlik hisobot
+            application.job_queue.run_repeating(
+                send_daily_summary,
+                interval=datetime.timedelta(hours=24),
+                first=datetime.time(hour=9, minute=0, tzinfo=pytz.timezone('Asia/Tashkent'))
+            )
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start_command)],
-        states={
-            SELECT_ACCOUNT_TYPE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_account_type_selection),
-            ],
-            MAIN_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$')
-            ],
-            ASSETS_MENU: [
-                CallbackQueryHandler(handle_assets_callback, pattern=r'^asset_.*$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-                MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
-                MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
-            ],
-            PRICE_INPUT: [
-                CallbackQueryHandler(handle_price_selection_callback, pattern=r'^set_price_.*$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_price_input),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-                MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
-                MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
-            ],
-            MAX_TRADES_INPUT: [
-                CallbackQueryHandler(handle_max_trades_selection_callback, pattern=r'^set_max_trades_.*$'),
-                CallbackQueryHandler(handle_max_trades_value_callback, pattern=r'^set_max_.*$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-                MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
-                MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
-            ],
-            SELL_BUY_MENU: [
-                CallbackQueryHandler(handle_sell_buy_callback, pattern=r'^(toggle_sell|toggle_buy)_.*$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-                MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
-                MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
-            ],
-            SETTINGS_MENU: [
-                CallbackQueryHandler(handle_settings_callback, pattern=r'^(toggle_auto_trading|toggle_demo|toggle_real|toggle_trailing_mode|toggle_ai_trailing_stop|toggle_trade_signal_level|toggle_trade_signal_ai_enabled|set_trailing_stop|check_balances|back_to_settings|back_to_main_menu)$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_trailing_stop_input),
-            ],
-            MANUAL_TRADE_MENU: [
-                CallbackQueryHandler(handle_manual_asset_selection, pattern=r'^manual_trade_asset_.*$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-                MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
-                MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
-            ],
-            MANUAL_TRADE_ACTION: [
-                CallbackQueryHandler(handle_manual_trade_action, pattern=r'^(manual_buy|manual_sell)_.*$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-                MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
-            ],
-            MANUAL_AMOUNT_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, execute_manual_trade),
-                CallbackQueryHandler(back_to_manual_trade_menu, pattern=r'^back_to_manual_trade_menu$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$')
-            ],
-            INDICATORS_MENU: [
-                CallbackQueryHandler(toggle_indicator_callback, pattern=r'^toggle_(ema|rsi|macd|bollinger|trend)$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-                CallbackQueryHandler(back_to_settings_callback, pattern=r'^back_to_settings$'),
-            ],
-            CURRENT_TRADE_MENU: [
-                CallbackQueryHandler(close_manual_trade, pattern=r'^close_trade_.*$'),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$')
-            ],
-        },
-        fallbacks=[CommandHandler("start", start_command)],
-        per_message=False
-    )
+            conv_handler = ConversationHandler(
+                entry_points=[CommandHandler("start", start_command)],
+                states={
+                    SELECT_ACCOUNT_TYPE: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_account_type_selection),
+                    ],
+                    MAIN_MENU: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$')
+                    ],
+                    ASSETS_MENU: [
+                        CallbackQueryHandler(handle_assets_callback, pattern=r'^asset_.*$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                        MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
+                        MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
+                    ],
+                    PRICE_INPUT: [
+                        CallbackQueryHandler(handle_price_selection_callback, pattern=r'^set_price_.*$'),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_price_input),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                        MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
+                        MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
+                    ],
+                    MAX_TRADES_INPUT: [
+                        CallbackQueryHandler(handle_max_trades_selection_callback, pattern=r'^set_max_trades_.*$'),
+                        CallbackQueryHandler(handle_max_trades_value_callback, pattern=r'^set_max_.*$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                        MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
+                        MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
+                    ],
+                    SELL_BUY_MENU: [
+                        CallbackQueryHandler(handle_sell_buy_callback, pattern=r'^(toggle_sell|toggle_buy)_.*$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                        MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
+                        MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
+                    ],
+                    SETTINGS_MENU: [
+                        CallbackQueryHandler(handle_settings_callback, pattern=r'^(toggle_auto_trading|toggle_demo|toggle_real|toggle_trailing_mode|toggle_ai_trailing_stop|toggle_trade_signal_level|toggle_trade_signal_ai_enabled|set_trailing_stop|check_balances|back_to_settings|back_to_main_menu)$'),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_trailing_stop_input),
+                    ],
+                    MANUAL_TRADE_MENU: [
+                        CallbackQueryHandler(handle_manual_asset_selection, pattern=r'^manual_trade_asset_.*$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                        MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
+                        MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
+                    ],
+                    MANUAL_TRADE_ACTION: [
+                        CallbackQueryHandler(handle_manual_trade_action, pattern=r'^(manual_buy|manual_sell)_.*$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                        MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
+                    ],
+                    MANUAL_AMOUNT_INPUT: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, execute_manual_trade),
+                        CallbackQueryHandler(back_to_manual_trade_menu, pattern=r'^back_to_manual_trade_menu$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$')
+                    ],
+                    INDICATORS_MENU: [
+                        CallbackQueryHandler(toggle_indicator_callback, pattern=r'^toggle_(ema|rsi|macd|bollinger|trend)$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                        CallbackQueryHandler(back_to_settings_callback, pattern=r'^back_to_settings$'),
+                    ],
+                    CURRENT_TRADE_MENU: [
+                        CallbackQueryHandler(close_manual_trade, pattern=r'^close_trade_.*$'),
+                        CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$')
+                    ],
+                },
+                fallbacks=[CommandHandler("start", start_command)],
+                per_message=False
+            )
 
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("accountinfo", check_account_info))
-    application.add_handler(CommandHandler("setleverage1x", set_leverage_1x))
-    application.add_handler(CommandHandler("contractinfo", check_contract_details))
-    application.add_handler(CommandHandler("debugpos", debug_positions))
-    application.add_handler(CommandHandler("reality", check_reality))
-    application.add_handler(CommandHandler("minsizes", check_min_sizes))
-    application.add_handler(CommandHandler("debugapi", debug_api))
-    application.add_handler(CommandHandler("debugstate", debug_states))
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^log (all|trade|important)$'), log_command))
-    application.add_handler(CommandHandler("status", check_auto_trade))
-    application.add_handler(CommandHandler("testepics", test_epics))
+            application.add_handler(conv_handler)
+            application.add_handler(CommandHandler("accountinfo", check_account_info))
+            application.add_handler(CommandHandler("setleverage1x", set_leverage_1x))
+            application.add_handler(CommandHandler("contractinfo", check_contract_details))
+            application.add_handler(CommandHandler("debugpos", debug_positions))
+            application.add_handler(CommandHandler("reality", check_reality))
+            application.add_handler(CommandHandler("minsizes", check_min_sizes))
+            application.add_handler(CommandHandler("debugapi", debug_api))
+            application.add_handler(CommandHandler("debugstate", debug_states))
+            application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^log (all|trade|important)$'), log_command))
+            application.add_handler(CommandHandler("status", check_auto_trade))
+            application.add_handler(CommandHandler("testepics", test_epics))
 
-
-
-    # Bot ishga tushganda avtomatik savdoni ishga tushirish
-    application.job_queue.run_once(
-        lambda ctx: start_trading_loops(ctx),
-        when=0
-    )
-    
-    logger.info("Bot ishga tushirildi. Chiqish uchun Ctrl+C tugmasini bosing.")
-
-    try:
-        application.run_polling(drop_pending_updates=True)
-    except KeyboardInterrupt:
-        logger.info("Bot o'chirilmoqda.")
-    except Exception as e:
-        logger.error(f"Kutilmagan xato: {e}")
+            # Bot ishga tushganda avtomatik savdoni ishga tushirish
+            application.job_queue.run_once(
+                lambda ctx: start_trading_loops(ctx),
+                when=0
+            )
+            
+            logger.info("Bot ishga tushirildi. Chiqish uchun Ctrl+C tugmasini bosing.")
+            
+            try:
+                application.run_polling(drop_pending_updates=True)
+            except KeyboardInterrupt:
+                logger.info("Bot o'chirilmoqda.")
+                break
+            except Exception as e:
+                logger.error(f"Botda xato: {e}. Qayta ishga tushirilmoqda...")
+                time.sleep(10)
+                
+        except Exception as e:
+            logger.error(f"Botni ishga tushirishda xato: {e}. Qayta urinilmoqda...")
+            time.sleep(10)
 
 if __name__ == "__main__":
     start_bot()
