@@ -1,46 +1,37 @@
-echo "import numpy as np
+import talib
+import numpy as np
 import pandas as pd
 from typing import Dict, Any
 
 def calculate_ema(prices: pd.Series, period: int) -> float:
-    '''EMA (Exponential Moving Average) - TA-Lib siz'''
-    return prices.ewm(span=period).mean().iloc[-1]
+    """EMA (Exponential Moving Average) hisoblaydi."""
+    ema = talib.EMA(prices, timeperiod=period)
+    return ema.iloc[-1] if not ema.empty else None
 
 def calculate_rsi(prices: pd.Series, period: int) -> float:
-    '''RSI (Relative Strength Index) - TA-Lib siz'''
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1]
+    """RSI (Relative Strength Index) hisoblaydi."""
+    rsi = talib.RSI(prices, timeperiod=period)
+    return rsi.iloc[-1] if not rsi.empty else None
 
 def calculate_macd(prices: pd.Series) -> Dict[str, float]:
-    '''MACD - TA-Lib siz'''
-    exp1 = prices.ewm(span=12).mean()
-    exp2 = prices.ewm(span=26).mean()
-    macd = exp1 - exp2
-    signal = macd.ewm(span=9).mean()
-    hist = macd - signal
+    """MACD (Moving Average Convergence Divergence) hisoblaydi."""
+    macd, macdsignal, macdhist = talib.MACD(prices, fastperiod=12, slowperiod=26, signalperiod=9)
     return {
-        'macd': macd.iloc[-1],
-        'signal': signal.iloc[-1], 
-        'hist': hist.iloc[-1]
+        "macd": macd.iloc[-1] if not macd.empty else None,
+        "signal": macdsignal.iloc[-1] if not macdsignal.empty else None,
+        "hist": macdhist.iloc[-1] if not macdhist.empty else None
     }
 
 def calculate_bollinger_bands(prices: pd.Series, period: int) -> Dict[str, float]:
-    '''Bollinger Bands - TA-Lib siz'''
-    sma = prices.rolling(window=period).mean()
-    std = prices.rolling(window=period).std()
-    upper = sma + (std * 2)
-    lower = sma - (std * 2)
+    """Bollinger Bands hisoblaydi."""
+    upper, middle, lower = talib.BBANDS(prices, timeperiod=period)
     return {
-        'upper': upper.iloc[-1],
-        'middle': sma.iloc[-1],
-        'lower': lower.iloc[-1]
+        "upper": upper.iloc[-1] if not upper.empty else None,
+        "middle": middle.iloc[-1] if not middle.empty else None,
+        "lower": lower.iloc[-1] if not lower.empty else None
     }
 
 def calculate_obv(prices: pd.Series, volumes: pd.Series) -> float:
-    '''OBV (On Balance Volume) - TA-Lib siz'''
-    obv = (np.sign(prices.diff()) * volumes).fillna(0).cumsum()
-    return obv.iloc[-1]" > indicators.py
+    """OBV (On Balance Volume) hisoblaydi."""
+    obv = talib.OBV(prices, volumes)
+    return obv.iloc[-1] if not obv.empty else None
