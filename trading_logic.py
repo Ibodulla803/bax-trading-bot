@@ -12,6 +12,7 @@ import math
 import hashlib
 import json
 import traceback
+import aiohttp
 from gemini_ai import get_ai_approval
 from typing import Dict, Any, List, Optional, Tuple
 from telegram.ext import ContextTypes, CallbackContext
