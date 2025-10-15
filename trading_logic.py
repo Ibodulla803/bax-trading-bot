@@ -176,6 +176,7 @@ async def start_trading_loops(context: CallbackContext):
                     asyncio.create_task(refresh_positions_loop(context))
                     asyncio.create_task(close_profitable_positions_loop(context))
                     asyncio.create_task(check_trailing_stop_loop(context))
+                    asyncio.create_task(check_stop_loss_loop(context))  
 
                     logger.info("Savdo looplari muvaffaqiyatli ishga tushirildi.")
 
@@ -675,8 +676,10 @@ def calculate_indicators(historical_prices: List[Dict]) -> Optional[Dict[str, An
         logger.exception("Indikatorlarni hisoblashda xato: %s", e)
         return None
 
+# trading_logic.py - send_hourly_report funksiyasini yangilaymiz
+
 async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
-    """Har soat faol aktivlar haqida hisobot yuborish"""
+    """Har soat faol aktivlar va ochiq savdolar haqida hisobot yuborish"""
     try:
         db, api = get_global_instances()
         if not db or not api:
@@ -688,11 +691,68 @@ async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
         if not chat_id:
             return
 
-        # Faol aktivlarni tekshirish
-        message = "🕐 **Soatlik Hisobot**\n\n"
-        has_active_trades = False
+        # Ochiq pozitsiyalarni olish
+        open_positions = await api.get_open_positions()
+        positions_count = len(open_positions) if open_positions else 0
 
+        message = "🕐 **Soatlik Hisobot**\n\n"
+        has_open_positions = False
+
+        # ✅ YANGI: Faqat ochiq savdolari bo'lgan aktivlarni ko'rsatamiz
+        if open_positions:
+            message += "🔓 **Ochiq Savdolar:**\n\n"
+            
+            for i, pos in enumerate(open_positions, 1):
+                deal_id = pos.get("dealId") or pos.get("positionId")
+                if not deal_id:
+                    continue
+
+                # Pozitsiya tafsilotlarini olish
+                detail = await api.get_position_details(deal_id)
+                position = detail.get("position", {})
+                market = detail.get("market", {})
+
+                asset_name = market.get("instrumentName", "Noma'lum")
+                epic = market.get("epic", "")
+                direction = position.get("direction", "").upper()
+                open_price = position.get("level", 0)
+                size = position.get("size", 0)
+                leverage = position.get("leverage", 1)
+                profit_loss = position.get("upl", 0)  # UPL - Unrealized P/L
+                
+                # Vaqtni formatlash
+                created_date = position.get("createdDateUTC", "")
+                open_time = "Noma'lum"
+                if created_date:
+                    try:
+                        opened_at = datetime.datetime.fromisoformat(created_date.replace("Z", "+00:00"))
+                        tashkent_time = opened_at.astimezone(pytz.timezone('Asia/Tashkent'))
+                        open_time = tashkent_time.strftime('%Y-%m-%d %H:%M')
+                    except:
+                        open_time = created_date
+
+                message += f"📊 **{asset_name} ({epic}):**\n"
+                message += f"   • Yo'nalish: {direction}\n"
+                message += f"   • Ochiq narx: {open_price}\n"
+                message += f"   • Leverage: {leverage}\n"
+                message += f"   • Ochilgan vaqti: {open_time}\n"
+                message += f"   • Foyda/zarar: {profit_loss:.2f} USD\n\n"
+                
+                has_open_positions = True
+
+        # Agar ochiq savdo yo'q bo'lsa
+        if not has_open_positions:
+            message += "📭 Hozirda ochiq savdolar yo'q\n\n"
+
+        # Aktivlar narxlari (qisqacha)
+        message += "💹 **Aktivlar Narxlari:**\n\n"
+        active_assets_shown = 0
+        
         for asset_name, details in ACTIVE_INSTRUMENTS.items():
+            # Faqat bir nechta asosiy aktivlarni ko'rsatamiz
+            if active_assets_shown >= 5:  # 5 ta aktiv ko'rsatamiz
+                break
+                
             asset_settings = settings.get("buy_sell_status_per_asset", {}).get(asset_name, {})
             if not asset_settings.get("active", True):
                 continue
@@ -709,26 +769,19 @@ async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
                 spread = sell_price - buy_price
                 spread_percent = (spread / buy_price) * 100
                 
-                message += f"📊 **{asset_name}**\n"
-                message += f"   Sotish: ${sell_price:.2f}\n"
-                message += f"   Sotib olish: ${buy_price:.2f}\n"
-                message += f"   Spread: {spread_percent:.2f}%\n\n"
-                has_active_trades = True
+                message += f"• {asset_name}: ${buy_price:.2f} / ${sell_price:.2f} ({spread_percent:.2f}%)\n"
+                active_assets_shown += 1
 
-        if has_active_trades:
-            # Ochiq pozitsiyalar soni
-            open_positions = await api.get_open_positions()
-            positions_count = len(open_positions) if open_positions else 0
-            
-            message += f"🔓 **Ochiq savdolar:** {positions_count} ta\n"
-            message += f"⏰ **Vaqt:** {get_tashkent_time().strftime('%H:%M')}\n"
-            
-            await context.bot.send_message(
-                chat_id=chat_id, 
-                text=message, 
-                parse_mode='Markdown'
-            )
-            logger.info("✅ Soatlik hisobot yuborildi")
+        # Yakuniy ma'lumotlar
+        message += f"\n🔢 **Jami:** {positions_count} ta ochiq savdo\n"
+        message += f"⏰ **Vaqt:** {get_tashkent_time().strftime('%H:%M')}\n"
+        
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text=message, 
+            parse_mode='Markdown'
+        )
+        logger.info("✅ Soatlik hisobot yuborildi")
 
     except Exception as e:
         logger.error(f"Soatlik hisobot yuborishda xato: {e}")
@@ -1031,14 +1084,17 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
                     trade_signal = "BUY"
 
                 if trade_signal:
+                    # ✅ YANGI: ai_enabled ni aniqlaymiz
+                    ai_enabled = settings.get("trade_signal_ai_enabled", False)
+                    
                     # ✅ YANGI: Agar ochiq savdo bo'lsa va yo'nalish bir xil bo'lmasa, davom etamiz
                     if current_direction and current_direction == trade_signal:
                         logger.info(f"⏸️ {asset} da {current_direction} savdo ochiq. {trade_signal} signali o'tkazib yuborildi.")
                         continue
 
                     logger.info(f"🎯 {asset} uchun {trade_signal} SIGNAL TOPILDI!")
-                     
-                    # AI tasdiqlash bloki
+                    
+                    # ✅ AI tasdiqlash bloki
                     if ai_enabled and signal_level != "TEST":
                         # To'g'ri resolution va son bilan ma'lumot oling
                         resolutions_to_try = ["HOUR", "DAY", "MINUTE"]
@@ -1049,7 +1105,6 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
                                 break
 
                         indicators = calculate_indicators(historical_prices or [])
-
                         
                         # ✅ AI'dan tasdiqlashni so'rash
                         ai_approval = await get_ai_approval(asset, trade_signal, prices, indicators or {})
@@ -1286,13 +1341,125 @@ async def close_profitable_positions_loop(context: ContextTypes.DEFAULT_TYPE):
 
                     # Pozitsiyani yopish
                     result = await api.close_position(deal_id=deal_id, direction=direction, epic=epic, size=size)
+                    
+                    # ✅ YANGI: Foyda/zarar bilan xabar yuborish
                     if result.get("success"):
-                        logger.info(f"✅ {asset_name} pozitsiyasi trailing stop bilan yopildi!")
-                        await send_trading_status(context, f"{asset_name} pozitsiyasi trailing stop bilan yopildi!", "success")
+                        try:
+                            # Foyda/zarar hisoblash
+                            if direction == "BUY":
+                                profit_loss = (current_price - open_price) * size
+                            else:  # SELL
+                                profit_loss = (open_price - current_price) * size
+                            
+                            # Formatlash
+                            if profit_loss >= 0:
+                                profit_text = f"+{profit_loss:.2f} USD"
+                            else:
+                                profit_text = f"{profit_loss:.2f} USD"
+                                
+                            logger.info(f"✅ {asset_name} pozitsiyasi {profit_text} trailing stop bilan yopildi!")
+                            await send_trading_status(
+                                context, 
+                                f"✅ {asset_name} pozitsiyasi {profit_text} trailing stop bilan yopildi!", 
+                                "success"
+                            )
+                        except Exception as e:
+                            logger.error(f"Foyda hisoblashda xato: {e}")
+                            # Fallback
+                            logger.info(f"✅ {asset_name} pozitsiyasi trailing stop bilan yopildi!")
+                            await send_trading_status(
+                                context, 
+                                f"✅ {asset_name} pozitsiyasi trailing stop bilan yopildi!", 
+                                "success"
+                            )
 
         except Exception as e:
             logger.error(f"Trailing stop loop error: {e}")
             await asyncio.sleep(60)
+
+
+# trading_logic.py - close_profitable_positions_loop ga qo'shamiz
+
+async def check_stop_loss_loop(context: ContextTypes.DEFAULT_TYPE):
+    """Stop Loss ni tekshirish loopi"""
+    logger.info("✅ Stop Loss loop ishga tushdi.")
+    
+    while not stop_event.is_set():
+        try:
+            await asyncio.sleep(30)  # Har 30 soniyada tekshiramiz
+            
+            db, api = get_global_instances()
+            if not db or not api:
+                continue
+                
+            settings = await db.get_settings()
+            
+            # Stop Loss o'chiq bo'lsa, ishlamaymiz
+            if not settings.get("stop_loss_enabled", False):
+                continue
+                
+            stop_loss_percent = settings.get("stop_loss_percent", 2.0) / 100  # 2% -> 0.02
+            
+            open_positions = await api.get_open_positions()
+            if not open_positions:
+                continue
+
+            for pos in open_positions:
+                deal_id = pos.get("dealId") or pos.get("positionId")
+                if not deal_id:
+                    continue
+
+                detail = await api.get_position_details(deal_id)
+                position = detail.get("position", {})
+                market = detail.get("market", {})
+
+                asset_name = market.get("instrumentName", "Noma'lum")
+                epic = market.get("epic", None)
+                direction = position.get("direction", "").upper()
+                open_price = position.get("level", 0)
+                size = position.get("size", 0)
+
+                current_prices = await api.get_prices(epic)
+                if not current_prices:
+                    continue
+
+                # Zarar foizini hisoblash
+                if direction == "BUY":
+                    current_price = current_prices.get("sell", 0)
+                    loss_percent = (open_price - current_price) / open_price if open_price else 0
+                else:  # SELL
+                    current_price = current_prices.get("buy", 0)
+                    loss_percent = (current_price - open_price) / open_price if open_price else 0
+
+                # Stop Loss shartini tekshirish
+                if loss_percent >= stop_loss_percent:
+                    logger.info(f"🛑 STOP LOSS TRIGGERED: {asset_name}")
+                    logger.info(f"   📊 Aktiv: {asset_name}")
+                    logger.info(f"   📉 Zarar foizi: {loss_percent*100:.2f}%")
+                    logger.info(f"   🎯 Stop Loss: {stop_loss_percent*100:.2f}%")
+
+                    # Pozitsiyani yopish
+                    result = await api.close_position(deal_id=deal_id, direction=direction, epic=epic, size=size)
+                    if result.get("success"):
+                        # Foyda/zarar miqdorini hisoblaymiz
+                        if direction == "BUY":
+                            profit_loss = (current_price - open_price) * size
+                        else:  # SELL
+                            profit_loss = (open_price - current_price) * size
+                        
+                        profit_text = f"{profit_loss:+.2f} USD"
+                        
+                        logger.info(f"✅ {asset_name} pozitsiyasi Stop Loss bilan yopildi! ({profit_text})")
+                        await send_trading_status(
+                            context, 
+                            f"🛑 {asset_name} pozitsiyasi {profit_text} Stop Loss bilan yopildi! (Zarar: {loss_percent*100:.2f}%)", 
+                            "warning"
+                        )
+
+        except Exception as e:
+            logger.error(f"Stop Loss loop error: {e}")
+            await asyncio.sleep(60)
+
 
 async def save_position(context, asset_name, asset_id, direction, size, result):
     """
