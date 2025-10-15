@@ -3,17 +3,6 @@ services:
     name: trading-bot
     env: python
     plan: free
-    pythonVersion: 3.11.9
-    # Build Command ni yangilash
-    buildCommand: |
-      # 1. TA-Lib uchun kerakli OS kutubxonalarini o'rnatish
-      sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev
-      # 2. TA-Lib manba faylini yuklab olish
-      wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-      # 3. TA-Lib ni qurish va o'rnatish
-      tar -xzf ta-lib-0.4.0-src.tar.gz
-      cd ta-lib && ./configure --prefix=/usr && make && sudo make install
-      cd ..
-      # 4. Python kutubxonalarini (shu jumladan TA-Lib ni emas, balki "TA-Lib"ni talab qiluvchi "TA-Lib" python paketini) o'rnatish
-      pip install -r requirements.txt
+    buildCommand: ""
     startCommand: python main.py
+    pythonVersion: 3.11.9
