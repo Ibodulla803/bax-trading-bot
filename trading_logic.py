@@ -969,19 +969,16 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
             settings = await db.get_settings()
 
             if not settings.get("auto_trading_enabled", True):
-                logger.info("⏸️ Auto savdo o‘chirilgan")
+                logger.info("⏸️ Auto savdo o'chirilgan")
                 await asyncio.sleep(10)
                 continue
 
-            # Signal darajasini aniqlash
-            signal_level = settings.get("trade_signal_level", "MNL")
-            ai_enabled = settings.get("trade_signal_ai_enabled", False)
-
-            # Ochiq pozitsiyalar sonini tekshirish
+            # Ochiq pozitsiyalarni olish
             try:
                 open_positions = await api.get_open_positions()
                 active_trade_count = len(open_positions) if open_positions else 0
-                logger.info(f"📊 Ochiq pozitsiyalar soni: {active_trade_count}")
+                if active_trade_count > 0:
+                    logger.info(f"📊 Ochiq pozitsiyalar soni: {active_trade_count}")
             except Exception as e:
                 logger.error(f"Ochiq pozitsiyalarni olishda xato: {e}")
                 active_trade_count = 0
@@ -1002,14 +999,27 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
                 if not is_market_open(asset):
                     continue
 
+                # ✅ YANGI: Aktivda ochiq savdo yo'nalishini tekshirish
+                current_direction = None
+                if open_positions:
+                    for pos in open_positions:
+                        pos_epic = pos.get('epic')
+                        pos_asset_name = get_asset_name_by_epic(pos_epic) if pos_epic else None
+                        if pos_asset_name == asset:
+                            current_direction = pos.get('direction', '').upper()
+                            logger.info(f"📊 {asset} da {current_direction} savdo ochiq")
+                            break
+
                 # Narxlarni olish
                 prices = await get_prices_with_retry(api, details["id"], 3)
                 if not prices:
-                    logger.warning(f"❌ [{asset}] narxlari topilmadi. O‘tkazib yuborildi.")
+                    logger.warning(f"❌ [{asset}] narxlari topilmadi. O'tkazib yuborildi.")
                     continue
 
                 # Signal hisoblash
                 trade_signal = None
+                signal_level = settings.get("trade_signal_level", "MNL")
+                
                 if signal_level == "MNL":
                     enabled_indicators = settings.get("enabled_indicators", {})
                     trade_signal = await calculate_mnl_signals(api, details['id'], settings, enabled_indicators)
@@ -1017,15 +1027,17 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
                     trade_signal = await calculate_weak_signals(api, details['id'], settings)
                 elif signal_level == "STRONG":
                     trade_signal = await calculate_strong_signals(api, details['id'], settings)
-                # TEST rejimida har doim "BUY" signali olinadi
                 elif signal_level == "TEST":
                     trade_signal = "BUY"
-                    logger.info(f"🔧 TEST rejimi: {asset} uchun BUY signali topildi.")
 
                 if trade_signal:
-                    logger.info(f"🎯 {asset} uchun {trade_signal} SIGNAL TOPILDI!")
+                    # ✅ YANGI: Agar ochiq savdo bo'lsa va yo'nalish bir xil bo'lmasa, davom etamiz
+                    if current_direction and current_direction == trade_signal:
+                        logger.info(f"⏸️ {asset} da {current_direction} savdo ochiq. {trade_signal} signali o'tkazib yuborildi.")
+                        continue
 
-                       
+                    logger.info(f"🎯 {asset} uchun {trade_signal} SIGNAL TOPILDI!")
+                     
                     # AI tasdiqlash bloki
                     if ai_enabled and signal_level != "TEST":
                         # To'g'ri resolution va son bilan ma'lumot oling
