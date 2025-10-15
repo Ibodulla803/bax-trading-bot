@@ -31,6 +31,7 @@ from config import (
     get_indicators_keyboard,
     get_asset_name_by_epic,
     ALLOWED_USER_ID,
+    STOP_LOSS_PERCENT_INPUT,
     get_trailing_mode_keyboard,  # ⬅️ YANGI IMPORT
     get_trade_signal_keyboard    # ⬅️ YANGI IMPORT
 )
@@ -86,11 +87,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)  
 logging.getLogger("telegram.ext").setLevel(logging.WARNING) 
-logging.getLogger("trading_logic").setLevel(logging.WARNING) 
-
-
-
-
+logging.getLogger("trading_logic").setLevel(logging.WARNING)
 
 # =====================================================================================
 # Asosiy bot funksiyalari
@@ -324,7 +321,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return SELECT_ACCOUNT_TYPE
 
 
-# main.py ga test komandasi qo'shing
 async def test_epics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Barcha EPIC larni test qilish"""
     api = context.user_data.get('capital_api')
@@ -417,6 +413,79 @@ async def toggle_indicator_callback(update: Update, context: ContextTypes.DEFAUL
     await db.save_settings(settings)
     await query.edit_message_reply_markup(get_indicators_keyboard(settings))
     return INDICATORS_MENU  # ⬅️ INDICATORS_MENU ga qaytish
+
+
+# main.py - yangi handler funksiyalari
+
+async def toggle_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stop Loss ni yoqish/o'chirish"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.user_data.get('db')
+    settings = await db.get_settings()
+    
+    # Stop Loss holatini o'zgartirish
+    current_status = settings.get("stop_loss_enabled", False)
+    settings["stop_loss_enabled"] = not current_status
+    
+    await db.save_settings(settings)
+    
+    status_text = "✅ YOQILDI" if not current_status else "❌ O'CHIRILDI"
+    await query.answer(text=f"Stop Loss {status_text}")
+    
+    await query.edit_message_reply_markup(reply_markup=get_settings_keyboard(settings))
+    return SETTINGS_MENU
+
+# main.py - set_stop_loss_percent_menu funksiyasini yangilaymiz
+
+async def set_stop_loss_percent_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stop Loss foizini sozlash menyusi"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.user_data.get('db')
+    settings = await db.get_settings()
+    
+    await query.edit_message_text(
+        f"Hozirgi Stop Loss: {settings.get('stop_loss_percent', 2.0)}%\n\n"
+        "Yangi Stop Loss foizini kiriting (0.5-10):",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Ortga", callback_data="back_to_settings")]
+        ])
+    )
+    
+    return STOP_LOSS_PERCENT_INPUT  # ✅ YANGI STATE GA O'TAMIZ
+
+# main.py - handle_stop_loss_percent_input ni yangilaymiz
+
+# main.py - handle_stop_loss_percent_input ni yangilaymiz
+
+async def handle_stop_loss_percent_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stop Loss foizini kiritishni qayta ishlash"""
+    try:
+        stop_loss_value = float(update.message.text)
+        
+        if stop_loss_value < 0.5 or stop_loss_value > 10:
+            await update.message.reply_text("❌ Foiz 0.5 dan 10 gacha bo'lishi kerak. Qaytadan kiriting:")
+            return STOP_LOSS_PERCENT_INPUT
+        
+        db = context.user_data.get('db')
+        settings = await db.get_settings()
+        
+        settings["stop_loss_percent"] = stop_loss_value
+        await db.save_settings(settings)
+        
+        await update.message.reply_text(
+            f"✅ Stop Loss foizi {stop_loss_value}% ga o'rnatildi.",
+            reply_markup=get_settings_keyboard(settings)
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ Noto'g'ri format. Faqat raqam kiriting:")
+        return STOP_LOSS_PERCENT_INPUT
+    
+    return SETTINGS_MENU
 
 
 async def back_to_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1933,9 +2002,9 @@ def start_bot():
         when=1  # 1 soniyadan keyin
     )
     application.job_queue.run_repeating(
-        send_daily_summary,
-        interval=datetime.timedelta(hours=24),
-        first=datetime.time(hour=9, minute=0, tzinfo=pytz.timezone('Asia/Tashkent'))
+        send_hourly_report,
+        interval=datetime.timedelta(hours=1),
+        first=datetime.time(hour=12, minute=0, tzinfo=pytz.timezone('Asia/Tashkent'))
     )
     application.job_queue.run_repeating(
         send_hourly_report,
@@ -1978,16 +2047,20 @@ def start_bot():
                 MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
                 MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
             ],
+
+            STOP_LOSS_PERCENT_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_stop_loss_percent_input),
+                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+            ],
             SETTINGS_MENU: [
                 CallbackQueryHandler(handle_settings_callback, pattern=r'^(toggle_auto_trading|toggle_demo|toggle_real|toggle_ai_trailing_stop|toggle_trade_signal_ai_enabled|set_trailing_stop|check_balances|back_to_settings|back_to_main_menu)$'),
                 CallbackQueryHandler(trailing_mode_menu, pattern=r'^trailing_mode_menu$'),
                 CallbackQueryHandler(trade_signal_menu, pattern=r'^trade_signal_menu$'),
                 CallbackQueryHandler(handle_trailing_mode_selection, pattern=r'^trailing_mode_(AUTO|MNL|AI|TEST)$'),
                 CallbackQueryHandler(handle_trade_signal_selection, pattern=r'^signal_level_(WEAK|STRONG|MNL|TEST)$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_trailing_stop_input),
-                CallbackQueryHandler(set_max_trades_menu, pattern=r'^set_max_trades$'),  # ✅ YANGI
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_trailing_stop_input),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_max_trades_input), 
+                CallbackQueryHandler(set_max_trades_menu, pattern=r'^set_max_trades$'),
+                CallbackQueryHandler(toggle_stop_loss, pattern=r'^toggle_stop_loss$'),  # ✅ YANGI
+                CallbackQueryHandler(set_stop_loss_percent_menu, pattern=r'^set_stop_loss_percent$'),  # ✅ YANGI
             ],
 
             MANUAL_TRADE_MENU: [
@@ -2056,7 +2129,7 @@ def start_bot():
         # Biz boshqa asinxron funksiyani (Ping Serverini) unga kirish uchun yaratamiz.
         
         # Ping serverini boshlash vazifasini yaratish uchun:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop_policy().get_event_loop()
         web_server_task = loop.create_task(start_web_server(application))
 
         # Telegram botini ishga tushirish va loopni boshqarish:
