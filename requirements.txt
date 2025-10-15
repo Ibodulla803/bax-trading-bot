@@ -15,4 +15,9 @@ pycryptodomex
 python-dotenv 
 requests 
 websockets 
+<<<<<<< HEAD
 time
+=======
+# TALIB qo'shildi!
+TA-Lib 
+>>>>>>> d3ea6af62a089bbac15cf6899b9b7324605e1b93
