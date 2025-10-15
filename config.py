@@ -146,9 +146,9 @@ DEFAULT_SETTINGS = {
     MANUAL_AMOUNT_INPUT,
     CURRENT_TRADE_MENU,
     INDICATORS_MENU,
-    MAX_TRADES_COUNT_INPUT      # ✅ YANGI: Umumiy faol savdolar soni
-) = range(13)  # ⬅️ 13 ga o'zgartiring
-
+    MAX_TRADES_COUNT_INPUT,
+    STOP_LOSS_PERCENT_INPUT  # ✅ YANGI STATE
+) = range(14)  # ⬅️ 14 ga o'zgartiring
 # Botning ishini boshqarish uchun global o'zgaruvchi
 stop_event = asyncio.Event()
 
@@ -251,6 +251,8 @@ def get_indicators_keyboard(settings: Dict) -> InlineKeyboardMarkup:
 
 # config.py - get_settings_keyboard funksiyasiga qo'shamiz
 
+# config.py - get_settings_keyboard funksiyasiga qo'shamiz
+
 def get_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     demo_status = "✅ ON" if settings.get("demo_account_status", False) else "❌ OFF"
     real_status = "✅ ON" if settings.get("real_account_status", False) else "❌ OFF"
@@ -258,7 +260,12 @@ def get_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     ai_trail_status = "✅ ON" if settings.get("use_ai_trailing_stop", False) else "❌ OFF"
     trailing_stop = settings.get("trailing_stop_percent", 0.10) * 100
     
-    # ✅ YANGI: Faol savdolar soni
+    # ✅ YANGI: Stop Loss sozlamalari
+    stop_loss_enabled = settings.get("stop_loss_enabled", False)
+    stop_loss_status = "✅ ON" if stop_loss_enabled else "❌ OFF"
+    stop_loss_percent = settings.get("stop_loss_percent", 2.0)  # 2% default
+    
+    # Faol savdolar soni
     max_trades = settings.get("max_trades_count", 3)
     max_trades_text = f"Faol savdolar: {max_trades} ta"
     
@@ -270,7 +277,7 @@ def get_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     trailing_mode = settings.get("trailing_mode", "MNL")
     trailing_mode_text = f"Trailing Mode: [{trailing_mode.upper()}]"
     
-    # Yangi "Trade Signal AI" tugmasini qo'shamiz
+    # Trade Signal AI
     trade_signal_ai_enabled = settings.get("trade_signal_ai_enabled", False)
     trade_signal_ai_text = f"Trade signal AI: [{'ON' if trade_signal_ai_enabled else 'OFF'}]"
     
@@ -279,7 +286,9 @@ def get_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"📊 Demo hisob: {demo_status}", callback_data="toggle_demo")],
         [InlineKeyboardButton(f"🏦 Real hisob: {real_status}", callback_data="toggle_real")],
         [InlineKeyboardButton(f"🔺 Trailing Stop: {trailing_stop:.1f}%", callback_data="set_trailing_stop")],
-        [InlineKeyboardButton(f"📈 {max_trades_text}", callback_data="set_max_trades")],  # ✅ YANGI TUGMA
+        [InlineKeyboardButton(f"🛑 Stop Loss: {stop_loss_status}", callback_data="toggle_stop_loss")],  # ✅ YANGI
+        [InlineKeyboardButton(f"📉 Stop Loss %: {stop_loss_percent:.1f}%", callback_data="set_stop_loss_percent")],  # ✅ YANGI
+        [InlineKeyboardButton(f"📈 {max_trades_text}", callback_data="set_max_trades")],
         [InlineKeyboardButton(trailing_mode_text, callback_data="trailing_mode_menu")],
         [InlineKeyboardButton(f"🧠 AI Trailing: {ai_trail_status}", callback_data="toggle_ai_trailing_stop")],
         [InlineKeyboardButton("💰 Hisob balansi", callback_data="check_balances")],
