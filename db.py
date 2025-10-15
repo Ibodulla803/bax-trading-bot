@@ -63,7 +63,7 @@ class InMemoryDB:
                     asset: 100.0 for asset in ACTIVE_INSTRUMENTS.keys()
                 }
                 settings["max_trades_per_asset"] = {
-                    asset: 10 for asset in ACTIVE_INSTRUMENTS.keys()
+                    asset: 3 for asset in ACTIVE_INSTRUMENTS.keys()
                 }
                 settings["current_trades_per_asset"] = {
                     asset: 0 for asset in ACTIVE_INSTRUMENTS.keys()
