@@ -1,7 +1,0 @@
-".env" 
-"__pycache__/" 
-"*.pyc" 
-"*.log" 
-"db.json" 
-".vscode/" 
-"venv/" 

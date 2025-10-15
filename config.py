@@ -138,15 +138,16 @@ DEFAULT_SETTINGS = {
     MAIN_MENU,
     ASSETS_MENU,
     PRICE_INPUT,
-    MAX_TRADES_INPUT,
+    MAX_TRADES_INPUT,           # Aktivlar uchun maksimal savdolar
     SELL_BUY_MENU,
     SETTINGS_MENU,
     MANUAL_TRADE_MENU,
     MANUAL_TRADE_ACTION,
     MANUAL_AMOUNT_INPUT,
     CURRENT_TRADE_MENU,
-    INDICATORS_MENU  # ⬅️ Yangi holat
-) = range(12)  # ⬅️ 12 ga o'zgartiring
+    INDICATORS_MENU,
+    MAX_TRADES_COUNT_INPUT      # ✅ YANGI: Umumiy faol savdolar soni
+) = range(13)  # ⬅️ 13 ga o'zgartiring
 
 # Botning ishini boshqarish uchun global o'zgaruvchi
 stop_event = asyncio.Event()
@@ -185,6 +186,38 @@ def get_assets_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton("🔙 Asosiy menyu", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(buttons)
 
+
+# config.py fayliga quyidagi funksiyalarni qo'shing
+
+def get_trailing_mode_keyboard(settings: Dict) -> InlineKeyboardMarkup:
+    """Trailing mode tanlash uchun klaviatura"""
+    current_mode = settings.get("trailing_mode", "MNL")
+    
+    keyboard = [
+        [InlineKeyboardButton(f"🔄 AUTO {'✅' if current_mode == 'AUTO' else ''}", callback_data="trailing_mode_AUTO")],
+        [InlineKeyboardButton(f"👤 MNL {'✅' if current_mode == 'MNL' else ''}", callback_data="trailing_mode_MNL")],
+        [InlineKeyboardButton(f"🤖 AI {'✅' if current_mode == 'AI' else ''}", callback_data="trailing_mode_AI")],
+        [InlineKeyboardButton(f"🧪 TEST {'✅' if current_mode == 'TEST' else ''}", callback_data="trailing_mode_TEST")],
+        [InlineKeyboardButton("🔙 Ortga", callback_data="back_to_settings")]
+    ]
+    
+    return InlineKeyboardMarkup(keyboard)
+
+def get_trade_signal_keyboard(settings: Dict) -> InlineKeyboardMarkup:
+    """Trade signal darajasini tanlash uchun klaviatura"""
+    current_level = settings.get("trade_signal_level", "MNL")
+    
+    keyboard = [
+        [InlineKeyboardButton(f"🟡 WEAK {'✅' if current_level == 'WEAK' else ''}", callback_data="signal_level_WEAK")],
+        [InlineKeyboardButton(f"🟢 STRONG {'✅' if current_level == 'STRONG' else ''}", callback_data="signal_level_STRONG")],
+        [InlineKeyboardButton(f"👤 MNL {'✅' if current_level == 'MNL' else ''}", callback_data="signal_level_MNL")],
+        [InlineKeyboardButton(f"🧪 TEST {'✅' if current_level == 'TEST' else ''}", callback_data="signal_level_TEST")],
+        [InlineKeyboardButton("🔙 Ortga", callback_data="back_to_settings")]
+    ]
+    
+    return InlineKeyboardMarkup(keyboard)
+
+
 def get_indicators_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     """Indikatorlarni yoqish/o'chirish tugmalari"""
     enabled_indicators = settings.get("enabled_indicators", {})
@@ -214,12 +247,20 @@ def get_indicators_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+# main.py dagi get_settings_keyboard funksiyasini yangilang
+
+# config.py - get_settings_keyboard funksiyasiga qo'shamiz
+
 def get_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     demo_status = "✅ ON" if settings.get("demo_account_status", False) else "❌ OFF"
     real_status = "✅ ON" if settings.get("real_account_status", False) else "❌ OFF"
     auto_trading_status = "✅ ON" if settings.get("auto_trading_enabled", True) else "❌ OFF"
     ai_trail_status = "✅ ON" if settings.get("use_ai_trailing_stop", False) else "❌ OFF"
     trailing_stop = settings.get("trailing_stop_percent", 0.10) * 100
+    
+    # ✅ YANGI: Faol savdolar soni
+    max_trades = settings.get("max_trades_count", 3)
+    max_trades_text = f"Faol savdolar: {max_trades} ta"
     
     # Trade Signal darajasi
     trade_signal_level = settings.get("trade_signal_level", "MNL")
@@ -238,11 +279,12 @@ def get_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"📊 Demo hisob: {demo_status}", callback_data="toggle_demo")],
         [InlineKeyboardButton(f"🏦 Real hisob: {real_status}", callback_data="toggle_real")],
         [InlineKeyboardButton(f"🔺 Trailing Stop: {trailing_stop:.1f}%", callback_data="set_trailing_stop")],
-        [InlineKeyboardButton(trailing_mode_text, callback_data="toggle_trailing_mode")],
+        [InlineKeyboardButton(f"📈 {max_trades_text}", callback_data="set_max_trades")],  # ✅ YANGI TUGMA
+        [InlineKeyboardButton(trailing_mode_text, callback_data="trailing_mode_menu")],
         [InlineKeyboardButton(f"🧠 AI Trailing: {ai_trail_status}", callback_data="toggle_ai_trailing_stop")],
         [InlineKeyboardButton("💰 Hisob balansi", callback_data="check_balances")],
         [
-            InlineKeyboardButton(trade_signal_text, callback_data="toggle_trade_signal_level"),
+            InlineKeyboardButton(trade_signal_text, callback_data="trade_signal_menu"),
             InlineKeyboardButton(trade_signal_ai_text, callback_data="toggle_trade_signal_ai_enabled"),
         ],
         [InlineKeyboardButton("⬅️ Ortga", callback_data="back_to_main_menu")],

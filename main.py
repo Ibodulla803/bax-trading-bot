@@ -23,14 +23,16 @@ from config import (
     CAPITAL_COM_USERNAME, CAPITAL_COM_PASSWORD, CHAT_ID,
     CAPITAL_COM_DEMO_API_KEY_PASSWORD, INDICATORS_MENU, CAPITAL_COM_REAL_API_KEY_PASSWORD,
     start_menu_keyboard, main_menu_keyboard, get_assets_keyboard, get_sell_buy_keyboard,
-    get_price_keyboard, get_max_trades_keyboard, get_settings_keyboard, get_max_trades_options_keyboard,
+    get_price_keyboard, get_max_trades_keyboard, get_settings_keyboard, get_max_trades_options_keyboard, MAX_TRADES_COUNT_INPUT, 
     ACTIVE_INSTRUMENTS,
     DEFAULT_SETTINGS,
     get_manual_trade_assets_keyboard,
     get_manual_trade_options_keyboard,
     get_indicators_keyboard,
     get_asset_name_by_epic,
-    ALLOWED_USER_ID
+    ALLOWED_USER_ID,
+    get_trailing_mode_keyboard,  # ⬅️ YANGI IMPORT
+    get_trade_signal_keyboard    # ⬅️ YANGI IMPORT
 )
 from trading_logic import (
     refresh_positions, 
@@ -39,6 +41,7 @@ from trading_logic import (
     start_trading_loops,
     trading_logic_loop, 
     calculate_mnl_signals,
+    send_hourly_report,
 )
 from db import InMemoryDB
 from capital_api import CapitalComAPI, CapitalAPIError
@@ -67,11 +70,11 @@ for handler in logging.root.handlers[:]:
 
 # Yangi, filtrlarsiz konfiguratsiya
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("bot_full.log", encoding='utf-8'),
-        logging.StreamHandler()  # Konsol uchun
+        logging.FileHandler("bot.log", encoding='utf-8')  # ✅ FAQAT FILE
+        # StreamHandler yo'q - konsolda hech narsa chiqmaydi
     ]
 )
 
@@ -81,9 +84,13 @@ logging.getLogger("asyncio").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-# Qolgan barcha LogFilter va FilteredStreamHandler klasslarini
-# vaqtincha o'chirib turing yoki kommentariyaga oling.
-# Ular sizga hozircha kerak emas.
+logging.getLogger("telegram").setLevel(logging.WARNING)  
+logging.getLogger("telegram.ext").setLevel(logging.WARNING) 
+logging.getLogger("trading_logic").setLevel(logging.WARNING) 
+
+
+
+
 
 # =====================================================================================
 # Asosiy bot funksiyalari
@@ -168,6 +175,86 @@ async def debug_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"Xato: {str(e)}")
     
     return MAIN_MENU
+
+
+# main.py fayliga quyidagi funksiyalarni qo'shing
+
+async def trailing_mode_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Trailing mode tanlash menyusi"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.user_data.get('db')
+    settings = await db.get_settings()
+    
+    await query.edit_message_text(
+        "Trailing mode ni tanlang:",
+        reply_markup=get_trailing_mode_keyboard(settings)
+    )
+    return SETTINGS_MENU
+
+async def trade_signal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Trade signal darajasini tanlash menyusi"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.user_data.get('db')
+    settings = await db.get_settings()
+    
+    await query.edit_message_text(
+        "Trade signal darajasini tanlang:",
+        reply_markup=get_trade_signal_keyboard(settings)
+    )
+    return SETTINGS_MENU
+
+async def handle_trailing_mode_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Trailing mode tanlashni qayta ishlash"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.user_data.get('db')
+    settings = await db.get_settings()
+    
+    data = query.data
+    new_mode = data.replace("trailing_mode_", "")
+    
+    # Yangi mode ni saqlash
+    settings["trailing_mode"] = new_mode
+    await db.save_settings(settings)
+    
+    await query.answer(text=f"Trailing mode: {new_mode} ✅")
+    
+    # Sozlamalar menyusiga qaytish
+    await query.edit_message_text(
+        "Bot sozlamalarini o'zgartirish uchun kerakli parametrlarni tanlang:",
+        reply_markup=get_settings_keyboard(settings)
+    )
+    return SETTINGS_MENU
+
+async def handle_trade_signal_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Trade signal darajasini tanlashni qayta ishlash"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.user_data.get('db')
+    settings = await db.get_settings()
+    
+    data = query.data
+    new_level = data.replace("signal_level_", "")
+    
+    # Yangi darajani saqlash
+    settings["trade_signal_level"] = new_level
+    await db.save_settings(settings)
+    
+    await query.answer(text=f"Signal darajasi: {new_level} ✅")
+    
+    # Sozlamalar menyusiga qaytish
+    await query.edit_message_text(
+        "Bot sozlamalarini o'zgartirish uchun kerakli parametrlarni tanlang:",
+        reply_markup=get_settings_keyboard(settings)
+    )
+    return SETTINGS_MENU
+
 
 async def debug_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """API debug funksiyasi"""
@@ -976,6 +1063,8 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
     return SETTINGS_MENU
 
 
+# main.py da handle_trailing_stop_input funksiyasini yangilaymiz
+
 async def handle_trailing_stop_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Foydalanuvchi trailing stop foizini kiritganda ishlaydi."""
     if not context.user_data.get('awaiting_trailing_stop'):
@@ -983,13 +1072,17 @@ async def handle_trailing_stop_input(update: Update, context: ContextTypes.DEFAU
     
     try:
         trailing_value = float(update.message.text)
-        if trailing_value < 1 or trailing_value > 100:
-            await update.message.reply_text("❌ Foiz 1 dan 100 gacha bo'lishi kerak. Qaytadan kiriting:")
+        
+        # ✅ YANGI: 0.01 dan 100 gacha (0.01% dan 100% gacha)
+        if trailing_value < 0.01 or trailing_value > 100:
+            await update.message.reply_text("❌ Foiz 0.01 dan 100 gacha bo'lishi kerak. Qaytadan kiriting:")
             return SETTINGS_MENU
         
         db = context.user_data.get('db')
         settings = await db.get_settings()
-        settings["trailing_stop_percent"] = trailing_value / 100
+        
+        # Qiymatni saqlaymiz (0.025 kabi)
+        settings["trailing_stop_percent"] = trailing_value / 100  # 0.025 → 0.00025
         await db.save_settings(settings)
         
         context.user_data['awaiting_trailing_stop'] = False
@@ -1066,6 +1159,62 @@ async def check_balances(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ])
     )
     return SETTINGS_MENU
+
+# main.py - yangi funksiyalar qo'shamiz
+
+async def set_max_trades_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Faol savdolar sonini sozlash menyusi"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.user_data.get('db')
+    settings = await db.get_settings()
+    
+    await query.edit_message_text(
+        f"Hozirgi faol savdolar soni: {settings.get('max_trades_count', 3)} ta\n\n"
+        "Yangi sonni kiriting (1-20):",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Ortga", callback_data="back_to_settings")]
+        ])
+    )
+    
+    return MAX_TRADES_COUNT_INPUT  # ✅ YANGI STATE GA O'TAMIZ
+    
+    context.user_data['awaiting_max_trades'] = True
+    return SETTINGS_MENU
+
+async def handle_max_trades_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Faol savdolar sonini kiritishni qayta ishlash"""
+    if not context.user_data.get('awaiting_max_trades'):
+        return await handle_main_menu(update, context)
+    
+    try:
+        max_trades = int(update.message.text)
+        
+        if max_trades < 1 or max_trades > 20:
+            await update.message.reply_text("❌ Son 1 dan 20 gacha bo'lishi kerak. Qaytadan kiriting:")
+            return SETTINGS_MENU
+        
+        db = context.user_data.get('db')
+        settings = await db.get_settings()
+        
+        settings["max_trades_count"] = max_trades
+        await db.save_settings(settings)
+        
+        context.user_data['awaiting_max_trades'] = False
+        
+        await update.message.reply_text(
+            f"✅ Faol savdolar soni {max_trades} ta ga o'rnatildi.",
+            reply_markup=get_settings_keyboard(settings)
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ Noto'g'ri format. Faqat butun son kiriting:")
+        return SETTINGS_MENU
+    
+    return SETTINGS_MENU
+
+
 async def handle_trailing_stop_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Foydalanuvchi trailing stop foizini kiritganda ishlaydi."""
     if not context.user_data.get('awaiting_trailing_stop'):
@@ -1073,13 +1222,17 @@ async def handle_trailing_stop_input(update: Update, context: ContextTypes.DEFAU
     
     try:
         trailing_value = float(update.message.text)
-        if trailing_value < 1 or trailing_value > 100:
-            await update.message.reply_text("❌ Foiz 1 dan 100 gacha bo'lishi kerak. Qaytadan kiriting:")
+        
+        # ✅ YANGI: 0.01 dan 100 gacha (0.01% dan 100% gacha)
+        if trailing_value < 0.01 or trailing_value > 100:
+            await update.message.reply_text("❌ Foiz 0.01 dan 100 gacha bo'lishi kerak. Qaytadan kiriting:")
             return SETTINGS_MENU
         
         db = context.user_data.get('db')
         settings = await db.get_settings()
-        settings["trailing_stop_percent"] = trailing_value / 100
+        
+        # ✅ Qiymatni saqlaymiz (0.025 kabi)
+        settings["trailing_stop_percent"] = trailing_value / 100  # 0.025 → 0.00025
         await db.save_settings(settings)
         
         context.user_data['awaiting_trailing_stop'] = False
@@ -1677,6 +1830,34 @@ async def close_manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     return MAIN_MENU
 
+# main.py - yangi handler:
+
+async def handle_max_trades_count_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Faol savdolar sonini kiritishni qayta ishlash"""
+    try:
+        max_trades = int(update.message.text)
+        
+        if max_trades < 1 or max_trades > 20:
+            await update.message.reply_text("❌ Son 1 dan 20 gacha bo'lishi kerak. Qaytadan kiriting:")
+            return MAX_TRADES_COUNT_INPUT
+        
+        db = context.user_data.get('db')
+        settings = await db.get_settings()
+        
+        settings["max_trades_count"] = max_trades
+        await db.save_settings(settings)
+        
+        await update.message.reply_text(
+            f"✅ Faol savdolar soni {max_trades} ta ga o'rnatildi.",
+            reply_markup=get_settings_keyboard(settings)
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ Noto'g'ri format. Faqat butun son kiriting:")
+        return MAX_TRADES_COUNT_INPUT
+    
+    return SETTINGS_MENU
+
 
 async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Manual savdo menyusiga qaytish."""
@@ -1708,13 +1889,36 @@ def start_bot():
     """Botni boshlaydi."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Kunlik hisobot
+    # ✅ BOT ISHGA TUSHGANDA XABAR YUBORISH
+    async def send_startup_message(application: Application):
+        try:
+            await application.bot.send_message(
+                chat_id=CHAT_ID,
+                text="🤖 **Bot ishga tushdi!**\n\n"
+                     "Savdo qilish uchun /start buyrug'ini bosing.\n"
+                     "⏰ Bot har soat hisobot yuboradi.\n"
+                     "🔔 Xabarlar faqat savdo ochilganda/yopilganda keladi.",
+                parse_mode='Markdown'
+            )
+            logger.info("✅ Bot ishga tushdi xabari yuborildi")
+        except Exception as e:
+            logger.error(f"Startup xabar yuborishda xato: {e}")
+
+    # Bot ishga tushganda xabar yuborish
+    application.job_queue.run_once(
+        lambda ctx: send_startup_message(application),
+        when=1  # 1 soniyadan keyin
+    )
     application.job_queue.run_repeating(
         send_daily_summary,
         interval=datetime.timedelta(hours=24),
         first=datetime.time(hour=9, minute=0, tzinfo=pytz.timezone('Asia/Tashkent'))
     )
-
+    application.job_queue.run_repeating(
+        send_hourly_report,
+        interval=datetime.timedelta(hours=1),
+        first=datetime.time(hour=10, minute=0, tzinfo=pytz.timezone('Asia/Tashkent'))  # Ertalab 10:00 dan
+    )
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
@@ -1752,9 +1956,17 @@ def start_bot():
                 MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
             ],
             SETTINGS_MENU: [
-                CallbackQueryHandler(handle_settings_callback, pattern=r'^(toggle_auto_trading|toggle_demo|toggle_real|toggle_trailing_mode|toggle_ai_trailing_stop|toggle_trade_signal_level|toggle_trade_signal_ai_enabled|set_trailing_stop|check_balances|back_to_settings|back_to_main_menu)$'),
+                CallbackQueryHandler(handle_settings_callback, pattern=r'^(toggle_auto_trading|toggle_demo|toggle_real|toggle_ai_trailing_stop|toggle_trade_signal_ai_enabled|set_trailing_stop|check_balances|back_to_settings|back_to_main_menu)$'),
+                CallbackQueryHandler(trailing_mode_menu, pattern=r'^trailing_mode_menu$'),
+                CallbackQueryHandler(trade_signal_menu, pattern=r'^trade_signal_menu$'),
+                CallbackQueryHandler(handle_trailing_mode_selection, pattern=r'^trailing_mode_(AUTO|MNL|AI|TEST)$'),
+                CallbackQueryHandler(handle_trade_signal_selection, pattern=r'^signal_level_(WEAK|STRONG|MNL|TEST)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_trailing_stop_input),
+                CallbackQueryHandler(set_max_trades_menu, pattern=r'^set_max_trades$'),  # ✅ YANGI
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_trailing_stop_input),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_max_trades_input), 
             ],
+
             MANUAL_TRADE_MENU: [
                 CallbackQueryHandler(handle_manual_asset_selection, pattern=r'^manual_trade_asset_.*$'),
                 CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
@@ -1774,6 +1986,10 @@ def start_bot():
             INDICATORS_MENU: [
                 CallbackQueryHandler(toggle_indicator_callback, pattern=r'^toggle_(ema|rsi|macd|bollinger|trend)$'),
                 CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
+                CallbackQueryHandler(back_to_settings_callback, pattern=r'^back_to_settings$'),
+            ],
+            MAX_TRADES_COUNT_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_max_trades_count_input),
                 CallbackQueryHandler(back_to_settings_callback, pattern=r'^back_to_settings$'),
             ],
             CURRENT_TRADE_MENU: [

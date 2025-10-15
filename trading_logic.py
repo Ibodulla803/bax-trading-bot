@@ -9,7 +9,9 @@ import pytz
 import uuid
 import talib
 import math
+import aiohttp
 import hashlib
+import time
 import json
 import traceback
 from gemini_ai import get_ai_approval
@@ -40,6 +42,9 @@ stop_event = asyncio.Event()
 last_prices = {}
 global_db_instance = None
 global_api_instance = None
+ai_trailing_cache = {}
+AI_CACHE_DURATION = 300  # 5 minut
+MIN_PROFIT_FOR_AI = 0.005  # 0.5% - AI ga so'rov yuborish uchun minimal foyda
 
 
 def set_global_instances(db, api):
@@ -119,9 +124,13 @@ def is_market_open(asset: str) -> bool:
     return True
 
 
+# trading_logic.py - start_trading_loops funksiyasiga log qo'shamiz
+
 async def start_trading_loops(context: CallbackContext):
     """Bot ishga tushganda avtomatik savdo tsikllarini ishga tushirish"""
     try:
+        logger.info("🚀 Bot savdo tsikllarini ishga tushirmoqda...")
+        
         # Bot_data yordamida ma'lumotlarni saqlaymiz va olamiz
         bot_data = context.application.bot_data
         
@@ -151,10 +160,8 @@ async def start_trading_loops(context: CallbackContext):
             login_result = await capital_api.login()
             
             if login_result.get("success"):
-                # ✅ Dynamic instrumentlarni yuklash
-                from config import ACTIVE_INSTRUMENTS
-                
                 # ✅ GLOBAL INSTANCELARNI SOZLASH (MUHIM QISMI)
+                logger.info("✅ Global instancelar sozlanmoqda...")
                 set_global_instances(user_data['db'], capital_api)
                 logger.info("✅ Global instancelar muvaffaqiyatli sozlandi")
                 
@@ -181,26 +188,12 @@ async def start_trading_loops(context: CallbackContext):
                         text="⏸️ Avtomatik savdo sozlamalarda o'chirilgan. Ishga tushirilmadi."
                     )
             else:
-                await context.bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=f"❌ API ga ulanishda xato: {login_result.get('message', 'Noma\'lum xato')}"
-                )
+                logger.error(f"❌ API ga ulanishda xato: {login_result.get('message')}")
         else:
-            await context.bot.send_message(
-                chat_id=CHAT_ID,
-                text="ℹ️ Hisob turini tanlash uchun /start bosing!"
-            )
-            
+            logger.info("ℹ️ Hisob turi tanlanmagan")
+
     except Exception as e:
         logger.error(f"Bot ishga tushirishda xato: {e}")
-        try:
-            await context.bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"❌ Bot ishga tushirishda xato: {str(e)}"
-            )
-        except:
-            pass
-
 async def get_prices_with_retry(api, epic: str, retries: int = 3) -> Optional[Dict]:
     """Qayta urinishlar bilan narxlarni olish"""
     for attempt in range(retries):
@@ -681,6 +674,64 @@ def calculate_indicators(historical_prices: List[Dict]) -> Optional[Dict[str, An
         logger.exception("Indikatorlarni hisoblashda xato: %s", e)
         return None
 
+async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
+    """Har soat faol aktivlar haqida hisobot yuborish"""
+    try:
+        db, api = get_global_instances()
+        if not db or not api:
+            return
+
+        settings = await db.get_settings()
+        chat_id = settings.get("chat_id") or CHAT_ID
+        
+        if not chat_id:
+            return
+
+        # Faol aktivlarni tekshirish
+        message = "🕐 **Soatlik Hisobot**\n\n"
+        has_active_trades = False
+
+        for asset_name, details in ACTIVE_INSTRUMENTS.items():
+            asset_settings = settings.get("buy_sell_status_per_asset", {}).get(asset_name, {})
+            if not asset_settings.get("active", True):
+                continue
+
+            # Joriy narxlarni olish
+            prices = await api.get_prices(details["id"])
+            if not prices:
+                continue
+
+            buy_price = prices.get("buy", 0)
+            sell_price = prices.get("sell", 0)
+            
+            if buy_price > 0 and sell_price > 0:
+                spread = sell_price - buy_price
+                spread_percent = (spread / buy_price) * 100
+                
+                message += f"📊 **{asset_name}**\n"
+                message += f"   Sotish: ${sell_price:.2f}\n"
+                message += f"   Sotib olish: ${buy_price:.2f}\n"
+                message += f"   Spread: {spread_percent:.2f}%\n\n"
+                has_active_trades = True
+
+        if has_active_trades:
+            # Ochiq pozitsiyalar soni
+            open_positions = await api.get_open_positions()
+            positions_count = len(open_positions) if open_positions else 0
+            
+            message += f"🔓 **Ochiq savdolar:** {positions_count} ta\n"
+            message += f"⏰ **Vaqt:** {get_tashkent_time().strftime('%H:%M')}\n"
+            
+            await context.bot.send_message(
+                chat_id=chat_id, 
+                text=message, 
+                parse_mode='Markdown'
+            )
+            logger.info("✅ Soatlik hisobot yuborildi")
+
+    except Exception as e:
+        logger.error(f"Soatlik hisobot yuborishda xato: {e}")
+
 
 async def execute_trade(api, asset_name, asset_id, signal, asset_settings, context):
     """
@@ -745,7 +796,7 @@ async def get_ai_trailing_approval(asset_name: str, direction: str, open_price: 
     
     try:
         # Gemini AI ga so'rov yuborish
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={GEMINI_API_KEY}"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -754,6 +805,23 @@ async def get_ai_trailing_approval(asset_name: str, direction: str, open_price: 
             }
         }
         
+        async with aiohttp.ClientSession() as session:
+            async with session.post(api_url, json=payload) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    text = result['candidates'][0]['content']['parts'][0]['text']
+                    
+                    # Javobni tahlil qilish
+                    if "APPROVE" in text.upper():
+                        return {"decision": "APPROVE", "reason": text}
+                    else:
+                        return {"decision": "REJECT", "reason": text}
+                else:
+                    return {"decision": "REJECT", "reason": "API xatosi"}
+                    
+    except Exception as e:
+        logger.error(f"AI trailing so'rovida xato: {e}")
+        return {"decision": "REJECT", "reason": f"Xato: {str(e)}"}        
         async with aiohttp.ClientSession() as session:
             async with session.post(api_url, json=payload) as response:
                 if response.status == 200:
@@ -831,40 +899,59 @@ async def refresh_positions(context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 
+# trading_logic.py da get_trailing_stop_percent funksiyasini yangilaymiz
+
 def get_trailing_stop_percent(settings, local_position, current_prices, indicators=None):
     """
-    AUTO rejim: (spread + komissiya) + minimal foyda (masalan, 0.4%)
+    Yangi MNL rejim: spread + komissiya + foydalanuvchi kiritgan minimal foyda
     """
     try:
         mode = settings.get("trailing_mode", "MNL")
+        buy = current_prices.get("buy", 0)
+        sell = current_prices.get("sell", 0)
+
+        # Spread hisoblash (AUTO kabi)
+        if buy > 0 and sell > 0:
+            mid_price = (buy + sell) / 2
+            spread = abs(sell - buy)
+            spread_percent = spread / mid_price
+        else:
+            spread_percent = 0.002  # default 0.2%
+
+        commission_percent = 0.0015  # 0.15%
 
         if mode == "MNL":
-            return settings.get("trailing_stop_percent", 0.01)  # 1% default
+            user_percent = settings.get("trailing_stop_percent", 0.01)
+            if user_percent < 1:
+                user_min_profit = user_percent / 100
+            else:
+                user_min_profit = user_percent / 100
+            
+            # ✅ YANGI: MNL rejimda ham SPREAD va KOMISSIYA qo'shamiz
+            if buy > 0 and sell > 0:
+                mid_price = (buy + sell) / 2
+                spread = abs(sell - buy)
+                spread_percent = spread / mid_price
+            else:
+                spread_percent = 0.002  # default 0.2%
+                
+            commission_percent = 0.0015  # 0.15%
+            
+            # ✅ ENDI: spread + komissiya + foydalanuvchi minimal foydasi
+            trailing_stop = spread_percent + commission_percent + user_min_profit
+            return trailing_stop
+
+
         elif mode == "AUTO":
-            buy = current_prices.get("buy", 0)
-            sell = current_prices.get("sell", 0)
-            open_price = local_position.get("open_price", 1) or 1
-
-            # Spread (faqat musbat)
-            spread = abs(sell - buy)
-            spread_percent = spread / open_price
-
-            # Komissiya/ushlama (masalan, 0.15%)
-            commission_percent = 0.0015
-
-            # Minimal foyda (masalan, 0.3%)
-            min_profit_percent = 0.003
-
-            # Trailing stop = spread + komissiya + min_foyda
+            # Avvalgidek AUTO rejim
+            min_profit_percent = 0.003   # 0.3%
             trailing_stop = spread_percent + commission_percent + min_profit_percent
-
-            # Chegaralash (masalan, 0.4% ... 3%)
             trailing_stop = max(0.004, min(trailing_stop, 0.03))
             return trailing_stop
 
-        elif mode == "AI":
-            return settings.get("ai_trailing_stop_percent", 0.02)  # 2%
-        return 0.01
+        else:  # AI, TEST
+            return settings.get("trailing_stop_percent", 0.01)
+
     except Exception as e:
         logger.error(f"get_trailing_stop_percent xatosi: {e}")
         return 0.01
@@ -1013,57 +1100,73 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def close_profitable_positions_loop(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Sozlamalarga mos ravishda trailing stop va savdo yopish funksiyasi (real-time pozitsiyalar bilan)
-    """
-    db, api = get_global_instances()
-    if not db or not api:
-        try:
-            db = context.user_data.get('db')
-            api = context.user_data.get('capital_api')
-            if db and api:
-                set_global_instances(db, api)
-                logger.info("✅ Global instancelar contextdan topildi va sozlandi.")
-            else:
-                logger.error("❌ Global DB yoki API topilmadi. Trailing stop to'xtatildi.")
-                return
-        except Exception as e:
-            logger.error(f"❌ Global instancelarni olishda xato: {e}")
-            return
-
+    """Sozlamalarga mos ravishda trailing stop va savdo yopish funksiyasi"""
     logger.info("✅ Trailing stop loop ishga tushdi.")
+
+    logger.info("⏳ Global instancelar sozlanishini kutish...")
+    await asyncio.sleep(10)  # 10 soniya kutish
 
     while not stop_event.is_set():
         try:
             await asyncio.sleep(30)
+            
+            # Global instancelarni tekshirish
+            db, api = get_global_instances()
+            if not db or not api:
+                # ✅ Contextdan ham topishga urinib ko'ramiz
+                db = context.user_data.get('db')
+                api = context.user_data.get('capital_api')
+                if db and api:
+                    logger.info("✅ Global instancelar contextdan topildi")
+                    set_global_instances(db, api)
+                else:
+                    logger.debug("⏳ Global instancelar hali topilmadi. Kutilyapti...")
+                    continue
+
             settings = await db.get_settings()
+            
             if not settings.get("demo_account_status", False) and not settings.get("real_account_status", False):
                 logger.info("⏸️ Hisoblar o'chirilgan. Trailing stop to'xtatildi.")
                 continue
 
             open_positions = await api.get_open_positions()
+            
             if not open_positions:
+                logger.debug("📭 Ochiq pozitsiyalar yo'q")
                 continue
 
-            for pos in open_positions:
+            logger.info(f"📋 {len(open_positions)} ta pozitsiya tekshirilmoqda...")
+            for i, pos in enumerate(open_positions):
                 deal_id = pos.get("dealId") or pos.get("positionId")
                 if not deal_id:
                     continue
 
-                # Har bir pozitsiya uchun to‘liq info
+                # ✅ LOG: Har bir pozitsiya uchun
+                logger.debug(f"🔎 {i+1}-pozitsiya tekshirilmoqda: {deal_id}")
+                
                 detail = await api.get_position_details(deal_id)
                 position = detail.get("position", {})
                 market = detail.get("market", {})
 
                 asset_name = market.get("instrumentName", "Noma'lum")
                 epic = market.get("epic", None)
+                
+                # ✅ LOG: Aktiv nomi
+                logger.debug(f"📊 Aktiv: {asset_name}")
+                
+                # Bozor ochiq/yopiqligini tekshirish
+                if not is_market_open(asset_name):
+                    logger.debug(f"⏸️ {asset_name} bozori yopiq")
+                    continue
+                
                 direction = position.get("direction", "").upper()
                 open_price = position.get("level", 0)
                 size = position.get("size", 0)
 
-                # Joriy narxni API orqali olamiz
+                # ✅ LOG: Narxlarni olish
                 current_prices = await api.get_prices(epic)
                 if not current_prices:
+                    logger.debug(f"❌ {asset_name} uchun narx topilmadi")
                     continue
 
                 # Trailing mode ni aniqlash
@@ -1071,24 +1174,7 @@ async def close_profitable_positions_loop(context: ContextTypes.DEFAULT_TYPE):
                 use_ai_trailing = settings.get("use_ai_trailing_stop", False)
 
                 # Trailing stop foizini olish
-                trailing_percent = 0
-
-                if trailing_mode == "MNL":
-                    trailing_percent = settings.get("trailing_stop_percent", 0.01)  # 1% default
-                elif trailing_mode == "AUTO":
-                    buy = current_prices.get("buy", 0)
-                    sell = current_prices.get("sell", 0)
-                    open_price = open_price or 1
-                    spread = abs(sell - buy)
-                    spread_percent = spread / open_price
-                    commission_percent = 0.0015  # 0.15%
-                    min_profit_percent = 0.003   # 0.3%
-                    trailing_percent = spread_percent + commission_percent + min_profit_percent
-                    trailing_percent = max(0.004, min(trailing_percent, 0.03))  # 0.4% ... 3%
-                elif trailing_mode == "AI":
-                    trailing_percent = settings.get("ai_trailing_stop_percent", 0.02)
-                else:
-                    trailing_percent = 0.01  # Default 1%
+                trailing_percent = get_trailing_stop_percent(settings, position, current_prices)
 
                 # Yo'nalishga qarab narxni aniqlash va foyda foizini hisoblash
                 if direction == "BUY":
@@ -1103,20 +1189,80 @@ async def close_profitable_positions_loop(context: ContextTypes.DEFAULT_TYPE):
                 # Trailing stop shartini tekshirish
                 should_close = False
                 close_reason = ""
+                ai_approval = None  # ✅ FIX: ai_approval ni default qiymat bilan ishga tushiramiz
 
+                # ✅ YANGI: OPTIMALLASHTIRILGAN AI TRAILING STOP
                 if trailing_mode == "AI" and use_ai_trailing:
-                    ai_approval = await get_ai_trailing_approval(
-                        asset_name,
-                        direction,
-                        open_price,
-                        current_price,
-                        price_diff
-                    )
-                    should_close = ai_approval.get("decision") == "APPROVE"
-                    close_reason = f"AI trailing: {ai_approval.get('reason', '')}"
+                    # ✅ 1. MINIMAL FOYDA TEKSHIRISH
+                    if price_diff < MIN_PROFIT_FOR_AI:
+                        should_close = False
+                        close_reason = f"Foyda {price_diff*100:.2f}% < minimal {MIN_PROFIT_FOR_AI*100:.2f}%"
+                        logger.debug(f"🤖 {asset_name} - {close_reason}")
+                        ai_approval = {"decision": "REJECT", "reason": close_reason}  # ✅ FIX: ai_approval ni to'ldiramiz
+                    
+                    else:
+                        # ✅ 2. CACHE TEKSHIRISH
+                        cache_key = f"{asset_name}_{direction}_{int(price_diff*1000)}"  # 0.1% precision
+                        
+                        current_time = time.time()
+                        if (cache_key in ai_trailing_cache and 
+                            current_time - ai_trailing_cache[cache_key]['timestamp'] < AI_CACHE_DURATION):
+                            
+                            # ✅ CACHE DAN OLISH
+                            ai_approval = ai_trailing_cache[cache_key]['approval']
+                            logger.debug(f"🤖 {asset_name} - AI qaror cache dan olindi")
+                            
+                        else:
+                            # ✅ YANGI SO'ROV YUBORISH
+                            try:
+                                ai_approval = await get_ai_trailing_approval(
+                                    asset_name,
+                                    direction,
+                                    open_price,
+                                    current_price,
+                                    price_diff
+                                )
+                                
+                                # ✅ CACHE GA SAQLASH
+                                ai_trailing_cache[cache_key] = {
+                                    'approval': ai_approval,
+                                    'timestamp': current_time
+                                }
+                                logger.debug(f"🤖 {asset_name} - Yangi AI so'rovi yuborildi")
+                                
+                            except Exception as e:
+                                logger.error(f"🤖 AI so'rovida xato: {e}")
+                                # ✅ FALLBACK: Oddiy trailing stop
+                                should_close = price_diff >= trailing_percent
+                                close_reason = f"AI xato: Oddiy trailing {trailing_percent*100:.2f}%"
+                                ai_approval = {"decision": "REJECT", "reason": f"API xato: {e}"}
+                        
+                        # ✅ AI QARORINI QAYTA ISHLASH (faqat ai_approval mavjud bo'lsa)
+                        if ai_approval:
+                            should_close = ai_approval.get("decision") == "APPROVE"
+                            close_reason = f"AI trailing: {ai_approval.get('reason', '')}"
+                        else:
+                            # Agar ai_approval hali ham None bo'lsa, oddiy trailing stop ishlatamiz
+                            should_close = price_diff >= trailing_percent
+                            close_reason = f"Trailing stop: {trailing_percent*100:.2f}%"
+
                 else:
+                    # ✅ ODDIY TRAILING STOP (AUTO/MNL)
                     should_close = price_diff >= trailing_percent
                     close_reason = f"Trailing stop: {trailing_percent*100:.2f}%"
+
+                # ✅ YANGI: BATAFSIL LOGLAR
+                if trailing_mode == "AI" and use_ai_trailing:
+                    logger.info(f"📊 {asset_name} - Trailing AI: Joriy {price_diff*100:.2f}%")
+                    if ai_approval:  # ✅ FIX: ai_approval mavjudligini tekshiramiz
+                        if should_close:
+                            logger.info(f"🤖 AI qaror: APPROVE - {ai_approval.get('reason', '')}")
+                        else:
+                            logger.info(f"🤖 AI qaror: REJECT - {ai_approval.get('reason', 'Foyda yetarli emas' if price_diff < MIN_PROFIT_FOR_AI else ai_approval.get('reason', ''))}")
+                    else:
+                        logger.info(f"🤖 AI qaror: REJECT - AI qaror mavjud emas")
+                else:
+                    logger.info(f"📊 {asset_name} - Trailing {trailing_mode}: Joriy {price_diff*100:.2f}% < Talab {trailing_percent*100:.2f}%")
 
                 if should_close:
                     logger.info(f"🚨 TRAILING STOP TRIGGERED [{trailing_mode}]")
@@ -1130,14 +1276,10 @@ async def close_profitable_positions_loop(context: ContextTypes.DEFAULT_TYPE):
                     if result.get("success"):
                         logger.info(f"✅ {asset_name} pozitsiyasi trailing stop bilan yopildi!")
                         await send_trading_status(context, f"{asset_name} pozitsiyasi trailing stop bilan yopildi!", "success")
-                else:
-                    logger.info(f"📊 {asset_name} - Trailing {trailing_mode}: "
-                                f"Joriy {price_diff*100:.2f}% < Talab {trailing_percent*100:.2f}%")
 
         except Exception as e:
             logger.error(f"Trailing stop loop error: {e}")
             await asyncio.sleep(60)
-
 
 async def save_position(context, asset_name, asset_id, direction, size, result):
     """

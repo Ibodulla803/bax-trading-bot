@@ -710,8 +710,6 @@ class CapitalComAPI:
             endpoint = "/api/v1/positions"
             result = await self._make_request("GET", endpoint)
 
-            logger.info(f"get_open_positions result: {result}")
-
             # API javobini tahlil qilish
             if isinstance(result, dict):
                 if "positions" in result:
