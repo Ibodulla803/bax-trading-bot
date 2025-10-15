@@ -31,6 +31,7 @@ from config import (
     get_indicators_keyboard,
     get_asset_name_by_epic,
     ALLOWED_USER_ID,
+    TRAILING_STOP_PERCENT_INPUT,
     STOP_LOSS_PERCENT_INPUT,
     get_trailing_mode_keyboard,  # ⬅️ YANGI IMPORT
     get_trade_signal_keyboard    # ⬅️ YANGI IMPORT
@@ -71,11 +72,11 @@ for handler in logging.root.handlers[:]:
 
 # Yangi, filtrlarsiz konfiguratsiya
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("bot.log", encoding='utf-8')  # ✅ FAQAT FILE
-        # StreamHandler yo'q - konsolda hech narsa chiqmaydi
+        logging.FileHandler("bot_full.log", encoding='utf-8'),
+        logging.StreamHandler()  # Konsol uchun
     ]
 )
 
@@ -87,8 +88,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)  
 logging.getLogger("telegram.ext").setLevel(logging.WARNING) 
-logging.getLogger("trading_logic").setLevel(logging.WARNING)
-
 # =====================================================================================
 # Asosiy bot funksiyalari
 # =====================================================================================
@@ -1101,7 +1100,7 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
                 [InlineKeyboardButton("🔙 Ortga", callback_data="back_to_settings")]
             ])
         )
-        return SETTINGS_MENU
+        return TRAILING_STOP_PERCENT_INPUT
 
     # Balanslarni tekshirish
     elif data == "check_balances":
@@ -1134,27 +1133,24 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
 
 # main.py da handle_trailing_stop_input funksiyasini yangilaymiz
 
+# main.py - handle_trailing_stop_input ni yangilaymiz
+
 async def handle_trailing_stop_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Foydalanuvchi trailing stop foizini kiritganda ishlaydi."""
-    if not context.user_data.get('awaiting_trailing_stop'):
-        return await handle_main_menu(update, context)
-    
     try:
         trailing_value = float(update.message.text)
         
         # ✅ YANGI: 0.01 dan 100 gacha (0.01% dan 100% gacha)
         if trailing_value < 0.01 or trailing_value > 100:
             await update.message.reply_text("❌ Foiz 0.01 dan 100 gacha bo'lishi kerak. Qaytadan kiriting:")
-            return SETTINGS_MENU
+            return TRAILING_STOP_PERCENT_INPUT
         
         db = context.user_data.get('db')
         settings = await db.get_settings()
         
-        # Qiymatni saqlaymiz (0.025 kabi)
+        # ✅ Qiymatni saqlaymiz (0.025 kabi)
         settings["trailing_stop_percent"] = trailing_value / 100  # 0.025 → 0.00025
         await db.save_settings(settings)
-        
-        context.user_data['awaiting_trailing_stop'] = False
         
         await update.message.reply_text(
             f"✅ Trailing Stop foizi {trailing_value}% ga o'rnatildi.",
@@ -1163,10 +1159,9 @@ async def handle_trailing_stop_input(update: Update, context: ContextTypes.DEFAU
         
     except ValueError:
         await update.message.reply_text("❌ Noto'g'ri format. Faqat raqam kiriting:")
-        return SETTINGS_MENU
+        return TRAILING_STOP_PERCENT_INPUT
     
     return SETTINGS_MENU
-
 async def check_balances(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Hisob balanslarini ko'rsatadi."""
     query = update.callback_query
@@ -2047,11 +2042,6 @@ def start_bot():
                 MessageHandler(filters.Regex("^Asosiy menyu$"), handle_main_menu),
                 MessageHandler(filters.Regex("^Tekshiruv$"), handle_main_menu),
             ],
-
-            STOP_LOSS_PERCENT_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_stop_loss_percent_input),
-                CallbackQueryHandler(back_to_main_menu, pattern=r'^back_to_main_menu$'),
-            ],
             SETTINGS_MENU: [
                 CallbackQueryHandler(handle_settings_callback, pattern=r'^(toggle_auto_trading|toggle_demo|toggle_real|toggle_ai_trailing_stop|toggle_trade_signal_ai_enabled|set_trailing_stop|check_balances|back_to_settings|back_to_main_menu)$'),
                 CallbackQueryHandler(trailing_mode_menu, pattern=r'^trailing_mode_menu$'),
@@ -2086,6 +2076,14 @@ def start_bot():
             ],
             MAX_TRADES_COUNT_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_max_trades_count_input),
+                CallbackQueryHandler(back_to_settings_callback, pattern=r'^back_to_settings$'),
+            ],
+            TRAILING_STOP_PERCENT_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_trailing_stop_input),
+                CallbackQueryHandler(back_to_settings_callback, pattern=r'^back_to_settings$'),
+            ],
+            STOP_LOSS_PERCENT_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_stop_loss_percent_input),
                 CallbackQueryHandler(back_to_settings_callback, pattern=r'^back_to_settings$'),
             ],
             CURRENT_TRADE_MENU: [
