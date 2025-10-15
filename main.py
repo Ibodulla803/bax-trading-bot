@@ -71,15 +71,19 @@ for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
 
 # Yangi, filtrlarsiz konfiguratsiya
+logger = logging.getLogger(__name__)
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+# Yangi, filtrlarsiz konfiguratsiya
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("bot_full.log", encoding='utf-8'),
-        logging.StreamHandler()  # Konsol uchun
+        logging.FileHandler("bot.log", encoding='utf-8')  # ✅ FAQAT FILE
+        # StreamHandler yo'q - konsolda hech narsa chiqmaydi
     ]
 )
-
 # Keraksiz loglarni bloklash
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.WARNING)
@@ -88,6 +92,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)  
 logging.getLogger("telegram.ext").setLevel(logging.WARNING) 
+logging.getLogger("trading_logic").setLevel(logging.WARNING) 
 # =====================================================================================
 # Asosiy bot funksiyalari
 # =====================================================================================
