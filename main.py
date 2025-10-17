@@ -7,7 +7,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
 from aiohttp import web
 import asyncio
 import logging
-import datetime
+import datetime 
+import datetime as dt
 import pytz
 from aiohttp.client_exceptions import ClientConnectionError
 import re
@@ -47,13 +48,19 @@ from trading_logic import (
 )
 from db import InMemoryDB
 from capital_api import CapitalComAPI, CapitalAPIError
+from datetime import timedelta
+from functools import wraps
+from apscheduler.schedulers.asyncio import AsyncIOScheduler 
+
+
 
 # Conversation handler holatlari
 SELECT_ACCOUNT_TYPE, MAIN_MENU, ASSETS_MENU, PRICE_INPUT, MAX_TRADES_INPUT, SELL_BUY_MENU, SETTINGS_MENU, MANUAL_TRADE_MENU, MANUAL_TRADE_ACTION, MANUAL_AMOUNT_INPUT, CURRENT_TRADE_MENU = range(11)
 
+tashkent = pytz.timezone('Asia/Tashkent')
 
 
-from functools import wraps
+
 
 def only_me(func):
     @wraps(func)
@@ -71,19 +78,15 @@ for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
 
 # Yangi, filtrlarsiz konfiguratsiya
-logger = logging.getLogger(__name__)
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-
-# Yangi, filtrlarsiz konfiguratsiya
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("bot.log", encoding='utf-8')  # ✅ FAQAT FILE
-        # StreamHandler yo'q - konsolda hech narsa chiqmaydi
+        logging.FileHandler("bot_full.log", encoding='utf-8'),
+        logging.StreamHandler()  # Konsol uchun
     ]
 )
+
 # Keraksiz loglarni bloklash
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.WARNING)
@@ -92,7 +95,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)  
 logging.getLogger("telegram.ext").setLevel(logging.WARNING) 
-logging.getLogger("trading_logic").setLevel(logging.WARNING) 
 # =====================================================================================
 # Asosiy bot funksiyalari
 # =====================================================================================
@@ -1951,6 +1953,42 @@ async def handle_max_trades_count_input(update: Update, context: ContextTypes.DE
     return SETTINGS_MENU
 
 
+async def _internal_hourly_report(app):
+    """Har 60 minutda chaqiriladi"""
+    db, api = get_global_instances()
+    if not db or not api:
+        return
+    settings = await db.get_settings()
+    chat_id = settings.get("chat_id") or CHAT_ID
+    if not chat_id:
+        return
+
+    open_positions = await api.get_open_positions()
+    positions_count = len(open_positions) if open_positions else 0
+    msg = (f"🕐 Soatlik hisobot\n"
+           f"⏰ Vaqt: {dt.datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%H:%M')}\n"
+           f"📊 Ochiq savdolar: {positions_count} ta")
+    try:
+        await app.bot.send_message(chat_id, msg)
+    except Exception as e:
+        logger.warning("Hisobot yuborilmadi: %s", e)
+
+def start_scheduler(app):
+    scheduler = AsyncIOScheduler(timezone='Asia/Tashkent')
+    # 25 minutda bir (server uyg‘otish)
+    scheduler.add_job(
+        lambda: asyncio.ensure_future(_internal_hourly_report(app)),
+        trigger='cron', minute='*/25', id='ping_keepalive'
+    )
+    # har soat :00 da to‘liq hisobot
+    scheduler.add_job(
+        lambda: asyncio.ensure_future(_internal_hourly_report(app)),
+        trigger='cron', minute=0, id='hourly_report'
+    )
+    scheduler.start()
+    logger.info("✅ Scheduler (async) ishga tushdi – 25 min + 60 min")
+
+
 async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Manual savdo menyusiga qaytish."""
     query = update.callback_query
@@ -1972,6 +2010,11 @@ async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAUL
         reply_markup=get_manual_trade_options_keyboard(asset_name)
     )
     return MANUAL_TRADE_MENU
+
+
+
+
+
 
 # =====================================================================================
 # Dispatcher
@@ -2003,8 +2046,9 @@ def start_bot():
     )
     application.job_queue.run_repeating(
         send_hourly_report,
-        interval=datetime.timedelta(hours=1),
-        first=datetime.time(hour=12, minute=0, tzinfo=pytz.timezone('Asia/Tashkent'))
+        interval=timedelta(hours=1),
+        first=5,  # 5 soniyadan keyin boshlanadi (container ko‘tarilgach)
+       name="hourly_report"
     )
     application.job_queue.run_repeating(
         send_hourly_report,
@@ -2134,9 +2178,8 @@ def start_bot():
         # Ping serverini boshlash vazifasini yaratish uchun:
         loop = asyncio.get_event_loop_policy().get_event_loop()
         web_server_task = loop.create_task(start_web_server(application))
+        start_scheduler(application)
 
-        # Telegram botini ishga tushirish va loopni boshqarish:
-        # close_loop=False - bu avvalgi "Event loop is closed" xatosini tuzatadi
         application.run_polling(drop_pending_updates=True, close_loop=False)
 
     except KeyboardInterrupt:
