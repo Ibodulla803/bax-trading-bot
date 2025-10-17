@@ -683,6 +683,7 @@ async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
     try:
         db, api = get_global_instances()
         if not db or not api:
+            logger.warning("Soatlik hisobot: global db/api topilmadi, o‘tkazib yuborildi")
             return
 
         settings = await db.get_settings()
