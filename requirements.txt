@@ -16,3 +16,4 @@ python-dotenv
 requests 
 websockets 
 TA-Lib
+apscheduler==3.10.4
