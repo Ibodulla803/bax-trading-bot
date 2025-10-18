@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytz
 import uuid
+import re
 import talib
 import math
 import aiohttp
@@ -43,10 +44,88 @@ stop_event = asyncio.Event()
 last_prices = {}
 global_db_instance = None
 global_api_instance = None
-ai_trailing_cache = {}
-AI_CACHE_DURATION = 300  # 5 minut
-MIN_PROFIT_FOR_AI = 0.005  # 0.5% - AI ga so'rov yuborish uchun minimal foyda
+ai_trailing_positions = {}
 
+# trading_logic.py - bosh qismiga (importlardan keyin)
+
+# Yordamchi funksiyalar
+
+def get_macd_status(macd, macd_signal):
+    """
+    MACD va signal chizig‘ini tahlil qilib trend holatini qaytaradi.
+    """
+    if macd is None or macd_signal is None:
+        return "UNKNOWN"
+
+    if macd > macd_signal:
+        return "BULLISH"
+    elif macd < macd_signal:
+        return "BEARISH"
+    else:
+        return "NEUTRAL"
+
+def get_trend_status(indicators: dict) -> str:
+    """
+    EMA va MACD asosida trend holatini aniqlaydi.
+    """
+    ema = indicators.get("ema20")
+    macd = indicators.get("macd")
+    macd_signal = indicators.get("macd_signal")
+
+    # MACD va EMA mavjud bo‘lishini tekshiramiz
+    if ema is None:
+        return "unknown"
+    if macd is None or macd_signal is None:
+        return "neutral"
+
+    # MACD chizig‘i signal chizig‘idan yuqorida bo‘lsa — bullish trend
+    if macd > macd_signal:
+        return "uptrend"
+    elif macd < macd_signal:
+        return "downtrend"
+    else:
+        return "neutral"
+
+def get_rsi_status(rsi: float) -> str:
+    """RSI qiymatiga ko‘ra holatni aniqlaydi"""
+    if rsi is None:
+        return "unknown"
+    if rsi > 70:
+        return "overbought"
+    elif rsi < 30:
+        return "oversold"
+    else:
+        return "neutral"
+
+def calculate_spread(prices: Dict) -> float:
+    """Spread foizini hisoblash"""
+    buy = prices.get('buy', 0)
+    sell = prices.get('sell', 0)
+    return ((sell - buy) / buy * 100) if buy > 0 else 0
+
+def get_bollinger_status(prices: Dict, indicators: Dict) -> str:
+    """Bollinger Bands holati"""
+    current_price = prices.get('buy', 0)
+    upper = indicators.get('bb_upper', 0)
+    lower = indicators.get('bb_lower', 0)
+    
+    if current_price > upper: return "ABOVE UPPER BAND ⬆️"
+    if current_price < lower: return "BELOW LOWER BAND ⬇️"
+    return "WITHIN BANDS ✅"
+
+def get_volatility_status(asset: str, indicators: Dict) -> str:
+    """Volatillik holati"""
+    # Soddalashtirilgan volatillik hisobi
+    return "MEDIUM"  # Haqiqiy loyihada batafsil hisoblash kerak
+
+def get_signal_strength(asset: str, signal: str, indicators: Dict) -> str:
+    """Signal kuchliligi"""
+    # Signal hisoblash mantiqiga asoslangan
+    return "STRONG" if indicators.get('rsi', 50) < 35 or indicators.get('rsi', 50) > 65 else "MODERATE"
+
+def get_support_resistance_status(indicators: Dict) -> str:
+    """Support/Resistance holati"""
+    return "KEY SUPPORT NEARBY" if indicators.get('rsi', 50) < 35 else "KEY RESISTANCE NEARBY" if indicators.get('rsi', 50) > 65 else "NEUTRAL ZONE"
 
 def set_global_instances(db, api):
     """Global DB va API instancelarini sozlash"""
@@ -125,7 +204,6 @@ def is_market_open(asset: str) -> bool:
     return True
 
 
-# trading_logic.py - start_trading_loops funksiyasiga log qo'shamiz
 
 async def start_trading_loops(context: CallbackContext):
     """Bot ishga tushganda avtomatik savdo tsikllarini ishga tushirish"""
@@ -177,6 +255,7 @@ async def start_trading_loops(context: CallbackContext):
                     asyncio.create_task(close_profitable_positions_loop(context))
                     asyncio.create_task(check_trailing_stop_loop(context))
                     asyncio.create_task(check_stop_loss_loop(context))  
+                    
 
                     logger.info("Savdo looplari muvaffaqiyatli ishga tushirildi.")
 
@@ -590,8 +669,6 @@ def calculate_indicators(historical_prices: List[Dict]) -> Optional[Dict[str, An
             if not isinstance(price, dict):
                 continue
 
-            logger.debug("API'dan olingan narx obyekti keys=%s", list(price.keys()))
-
             close_price = None
             if "closePrice" in price and isinstance(price["closePrice"], dict):
                 # prefer bid (yoki strategiyaga qarab 'ask')
@@ -676,7 +753,172 @@ def calculate_indicators(historical_prices: List[Dict]) -> Optional[Dict[str, An
         logger.exception("Indikatorlarni hisoblashda xato: %s", e)
         return None
 
-# trading_logic.py - send_hourly_report funksiyasini yangilaymiz
+# ✅ YANGI: Dynamic AI Trailing Stop funksiyalari
+import re
+
+async def get_dynamic_ai_trailing_decision(asset_name: str, direction: str, open_price: float, 
+                                         current_price: float, indicators: Dict, deal_id: str,
+                                         prices: Dict) -> Dict:  # ✅ prices qo'shildi
+    """
+    Dynamic AI trailing stop - spread va costlarni hisobga oladi
+    """
+    # Savdo xarajatlarini hisoblash
+    trading_costs = calculate_trading_costs(prices, direction)
+    profit_percent = (current_price - open_price) / open_price * 100 if direction == "BUY" else (open_price - current_price) / open_price * 100
+    
+    # Net foyda (xarajatlardan keyin)
+    net_profit = profit_percent - trading_costs["total_entry_cost"]
+    
+    prompt = f"""
+🎯 **DYNAMIC TRAILING STOP ANALYSIS - COST AWARE**
+
+📊 **CURRENT POSITION:**
+- ASSET: {asset_name}
+- DIRECTION: {direction}
+- OPEN PRICE: {open_price:.2f}
+- CURRENT PRICE: {current_price:.2f}
+- GROSS PROFIT: {profit_percent:+.2f}%
+
+💰 **TRADING COSTS:**
+- SPREAD: {trading_costs['spread_percent']:.3f}%
+- COMMISSION: {trading_costs['commission_percent']:.3f}%
+- TOTAL ENTRY COST: {trading_costs['total_entry_cost']:.3f}%
+- NET PROFIT: {net_profit:+.2f}%
+- MIN PROFIT REQUIRED: {trading_costs['min_profit_required']:.2f}%
+
+📈 **TECHNICAL ANALYSIS:**
+- RSI: {indicators.get('rsi', 'N/A'):.1f} {get_rsi_status(indicators.get('rsi'))}
+- TREND: {get_trend_status(indicators)}
+- MACD: {get_macd_status(indicators)}
+- VOLATILITY: {get_volatility_status(asset_name, indicators)}
+- SUPPORT/RESISTANCE: {get_support_resistance_status(indicators)}
+
+🎯 **TRADING DECISION REQUEST:**
+NET profit {net_profit:+.2f}% ni hisobga olgan holda analiz qiling:
+1. Savdoni Hozir YOPISH kerakmi? (xarajatlarni qoplaganmisiz?)
+2. Agar YOPMASLIK kerak bo'lsa, optimal NET Take Profit foizi qancha?
+3. Spread va commission xarajatlarini hisobga olgan holda qaror qiling
+
+📝 **RESPONSE FORMAT:**
+CLOSE: [Sabab - NET profit va xarajatlar asosida]
+YOKI  
+HOLD: [Taklif qilingan NET TP: X%, Ishonch: Y%, Sabab]
+"""
+
+    ai_response = await get_ai_approval(asset_name, direction, prices, indicators)
+    return parse_dynamic_ai_response(ai_response, current_price, open_price, direction, trading_costs)
+
+
+def parse_dynamic_ai_response(ai_response: Dict, current_price: float, open_price: float, 
+                            direction: str, trading_costs: Dict) -> Dict:
+    """
+    AI javobini parsing qilish - NET profit asosida
+    """
+    text = ai_response.get('reason', '').upper()
+    
+    if "CLOSE" in text:
+        return {"action": "CLOSE", "reason": ai_response.get('reason', 'AI NET profit asosida yopishni tavsiya qiladi')}
+    elif "HOLD" in text:
+        # NET Take Profit ni extract qilish
+        tp_match = re.search(r'NET TP:\s*([\d.]+)%', text) or re.search(r'TP:\s*([\d.]+)%', text)
+        confidence_match = re.search(r'Confidence:\s*([\d.]+)%', text) or re.search(r'Ishonch:\s*([\d.]+)%', text)
+        
+        # NET TP ni olish yoki default
+        net_tp_percent = float(tp_match.group(1)) if tp_match else 2.0  # default 2% NET
+        
+        # GROSS TP ni hisoblash (NET TP + costs)
+        gross_tp_percent = net_tp_percent + trading_costs["total_entry_cost"]
+        
+        confidence = float(confidence_match.group(1)) if confidence_match else 70.0
+        
+        # Take profit narxini hisoblash (GROSS asosida)
+        if direction == "BUY":
+            take_profit_price = open_price * (1 + gross_tp_percent / 100)
+        else:  # SELL
+            take_profit_price = open_price * (1 - gross_tp_percent / 100)
+            
+        return {
+            "action": "HOLD", 
+            "take_profit_percent": gross_tp_percent,  # GROSS TP
+            "net_take_profit_percent": net_tp_percent,  # NET TP
+            "take_profit_price": take_profit_price,
+            "confidence": confidence,
+            "reason": ai_response.get('reason', 'AI NET profit asosida davom ettirishni tavsiya qiladi')
+        }
+    else:
+        # Default - hozir yopmaslik
+        return {"action": "HOLD", "take_profit_percent": 3.0, "net_take_profit_percent": 2.5, "confidence": 60.0, "reason": "AI noaniq javob berdi"}
+
+
+def calculate_trading_costs(prices: Dict, direction: str) -> Dict:
+    """Savdo xarajatlarini hisoblash"""
+    spread = prices['sell'] - prices['buy']
+    spread_percent = (spread / prices['buy']) * 100
+    
+    # Taxminiy commission (brokerga qarab)
+    commission_percent = 0.001  # 0.1%
+    
+    # Jami kirish xarajati
+    total_entry_cost = spread_percent + commission_percent
+    
+    # Minimal foyda (xarajatlarni qoplash uchun)
+    min_profit_to_break_even = total_entry_cost * 1.5  # 50% safety margin
+    
+    return {
+        "spread_percent": spread_percent,
+        "commission_percent": commission_percent,
+        "total_entry_cost": total_entry_cost,
+        "min_profit_required": min_profit_to_break_even
+    }
+
+
+
+
+
+
+async def get_ai_trade_signal_enhanced(asset: str, signal: str, prices: Dict, indicators: Dict) -> Dict:
+    """
+    Mukammal AI so'rovi - barcha kerakli ma'lumotlar bilan
+    """
+    prompt = f"""
+🎯 **PROFESSIONAL TRADING SIGNAL EVALUATION**
+
+📊 **TRADE OPPORTUNITY:**
+- ASSET: {asset}
+- PROPOSED ACTION: {signal}
+- CURRENT PRICE: {prices.get('buy' if signal == 'BUY' else 'sell', 'N/A')}
+- SPREAD: {calculate_spread(prices):.3f}%
+
+📈 **TECHNICAL ANALYSIS:**
+- RSI: {indicators.get('rsi', 'N/A'):.1f} {get_rsi_status(indicators.get('rsi'))}
+- TREND: {get_trend_status(indicators)}
+- MACD: {get_macd_status(indicators)}
+- BOLLINGER BANDS: {get_bollinger_status(prices, indicators)}
+- SUPPORT/RESISTANCE: {get_support_resistance_status(indicators)}
+
+⚡ **MARKET CONTEXT:**
+- MARKET HOURS: {'OPEN' if is_market_open(asset) else 'CLOSED'}
+- VOLATILITY: {get_volatility_status(asset, indicators)}
+- SIGNAL STRENGTH: {get_signal_strength(asset, signal, indicators)}
+
+📋 **TRADING PARAMETERS:**
+- POSITION SIZE: Medium
+- RISK LEVEL: {'LOW' if signal == 'BUY' and indicators.get('rsi', 50) < 40 else 'MEDIUM'}
+- TIME FRAME: Swing Trade (1-3 days)
+
+❓ **EVALUATION REQUEST:**
+Should I execute this {signal} trade for {asset} based on the current market conditions and technical setup?
+
+📝 **RESPONSE FORMAT:**
+APPROVE: [Brief reasoning - max 2 lines]
+OR  
+REJECT: [Brief reasoning - max 2 lines]
+
+Focus on risk/reward ratio, technical confirmation, and market context.
+"""
+    
+    return await get_ai_approval(asset, signal, prices, indicators)
+
 
 async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
     """Har soat faol aktivlar va ochiq savdolar haqida hisobot yuborish"""
@@ -1043,7 +1285,8 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(10)
                 continue
 
-            # Har bir aktivni tekshirish
+            # trading_logic.py - trading_logic_loop ichida
+
             for asset, details in ACTIVE_INSTRUMENTS.items():
                 logger.info(f"📊 {asset} tekshirilmoqda...")
 
@@ -1053,16 +1296,21 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
                 if not is_market_open(asset):
                     continue
 
-                # ✅ YANGI: Aktivda ochiq savdo yo'nalishini tekshirish
-                current_direction = None
-                if open_positions:
-                    for pos in open_positions:
-                        pos_epic = pos.get('epic')
-                        pos_asset_name = get_asset_name_by_epic(pos_epic) if pos_epic else None
-                        if pos_asset_name == asset:
-                            current_direction = pos.get('direction', '').upper()
-                            logger.info(f"📊 {asset} da {current_direction} savdo ochiq")
+                # ✅ AI uchun kerak bo'lsa, indicators ni oldindan tayyorlaymiz
+                ai_enabled = settings.get("trade_signal_ai_enabled", False)
+                indicators = None
+                
+                # Agar AI yoqilmagan bo'lsa, indicators ni hisoblamaymiz
+                if ai_enabled and signal_level != "TEST":
+                    # Faqat AI yoqilgan bo'lsa indicators ni hisoblaymiz
+                    historical_prices = []
+                    for res in ["HOUR", "DAY", "MINUTE"]:
+                        historical_prices = await api.get_historical_prices(details['id'], res, 50)
+                        if historical_prices and len(historical_prices) >= 20:
                             break
+                    indicators = calculate_indicators(historical_prices or [])
+                else:
+                    indicators = {}  # Bo'sh dict
 
                 # Narxlarni olish
                 prices = await get_prices_with_retry(api, details["id"], 3)
@@ -1085,46 +1333,38 @@ async def trading_logic_loop(context: ContextTypes.DEFAULT_TYPE):
                     trade_signal = "BUY"
 
                 if trade_signal:
-                    # ✅ YANGI: ai_enabled ni aniqlaymiz
-                    ai_enabled = settings.get("trade_signal_ai_enabled", False)
-                    
-                    # ✅ YANGI: Agar ochiq savdo bo'lsa va yo'nalish bir xil bo'lmasa, davom etamiz
-                    if current_direction and current_direction == trade_signal:
-                        logger.info(f"⏸️ {asset} da {current_direction} savdo ochiq. {trade_signal} signali o'tkazib yuborildi.")
-                        continue
-
                     logger.info(f"🎯 {asset} uchun {trade_signal} SIGNAL TOPILDI!")
                     
-                    # ✅ AI tasdiqlash bloki
+                    # ✅ AI tasdiqlash - CACHEsiz
                     if ai_enabled and signal_level != "TEST":
-                        # To'g'ri resolution va son bilan ma'lumot oling
-                        resolutions_to_try = ["HOUR", "DAY", "MINUTE"]
-                        historical_prices = []
-                        for res in resolutions_to_try:
-                            historical_prices = await api.get_historical_prices(details['id'], res, 50)
-                            if historical_prices and len(historical_prices) >= 20:
-                                break
+                        try:
+                            # Har doim yangi AI so'rovi
+                            ai_approval = await get_ai_trade_signal_enhanced(
+                                asset, trade_signal, prices, indicators or {}
+                            )
 
-                        indicators = calculate_indicators(historical_prices or [])
-                        
-                        # ✅ AI'dan tasdiqlashni so'rash
-                        ai_approval = await get_ai_approval(asset, trade_signal, prices, indicators or {})
-
-                        if not ai_approval or not isinstance(ai_approval, dict) or ai_approval.get("decision") != "APPROVE":
-                            # Agar savdo rad etilsa
-                            reason = ai_approval.get('reason', 'Noma‘lum sabab')
-                            logger.warning(f"[{asset}] savdosi AI tomonidan rad etildi yoki javob noto‘g‘ri. Sabab: {reason}")
-                            
-                            # ✅ Telegramga AI bergan sababni yuborish
-                            await send_trading_status(context, f"❌ [AI] {asset} savdosi rad etildi. Sabab: {reason}", "warning")
-                            
+                            if ai_approval.get("decision") != "APPROVE":
+                                reason = ai_approval.get('reason', 'Noma\'lum sabab')
+                                await send_trading_status(
+                                    context, 
+                                    f"❌ [AI] {asset} {trade_signal} rad etildi\n📝 {reason}", 
+                                    "warning"
+                                )
+                                continue
+                            else:
+                                logger.info(f"[{asset}] AI tasdiqladi: {trade_signal}")
+                                await send_trading_status(
+                                    context, 
+                                    f"✅ [AI] {asset} tasdiqlandi: {trade_signal.upper()}", 
+                                    "success"
+                                )
+                                
+                        except Exception as e:
+                            logger.error(f"AI tasdiqlashda xato: {e}")
+                            # AI da xato bo'lsa, savdoni o'tkazib yuboramiz
                             continue
-                        else:
-                            # Agar savdo tasdiqlansa
-                            logger.info(f"[{asset}] savdosi AI tomonidan tasdiqlandi: {trade_signal}")
-                            await send_trading_status(context, f"✅ [AI] {asset} savdosi tasdiqlandi: {trade_signal.upper()}", "success")
-
                     
+       
                     # ✅ Savdoni TEST rejimiga o'xshatib amalga oshirish
                     try:
                         usd_amount = settings.get("trade_amount_per_asset", {}).get(asset, 50)
@@ -1175,9 +1415,12 @@ async def close_profitable_positions_loop(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏳ Global instancelar sozlanishini kutish...")
     await asyncio.sleep(10)  # 10 soniya kutish
 
+    # ✅ YANGI: Dynamic AI trailing positions tracker
+    ai_trailing_positions = {}
+
     while not stop_event.is_set():
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(30)  # ⬅️ ASOSIY LOOP 30 soniyada bir
             
             # Global instancelarni tekshirish
             db, api = get_global_instances()
@@ -1258,86 +1501,98 @@ async def close_profitable_positions_loop(context: ContextTypes.DEFAULT_TYPE):
                 # Trailing stop shartini tekshirish
                 should_close = False
                 close_reason = ""
-                ai_approval = None  # ✅ FIX: ai_approval ni default qiymat bilan ishga tushiramiz
 
-                # ✅ YANGI: OPTIMALLASHTIRILGAN AI TRAILING STOP
+                logger.info(f"🔧 DEBUG: {asset_name} | Mode: {trailing_mode} | AI Trailing: {use_ai_trailing}")
+
+                # ✅ YANGI: Dynamic AI trailing stop (spread bilan)
                 if trailing_mode == "AI" and use_ai_trailing:
-                    # ✅ 1. MINIMAL FOYDA TEKSHIRISH
-                    if price_diff < MIN_PROFIT_FOR_AI:
-                        should_close = False
-                        close_reason = f"Foyda {price_diff*100:.2f}% < minimal {MIN_PROFIT_FOR_AI*100:.2f}%"
-                        logger.debug(f"🤖 {asset_name} - {close_reason}")
-                        ai_approval = {"decision": "REJECT", "reason": close_reason}  # ✅ FIX: ai_approval ni to'ldiramiz
-                    
-                    else:
-                        # ✅ 2. CACHE TEKSHIRISH
-                        cache_key = f"{asset_name}_{direction}_{int(price_diff*1000)}"  # 0.1% precision
-                        
-                        current_time = time.time()
-                        if (cache_key in ai_trailing_cache and 
-                            current_time - ai_trailing_cache[cache_key]['timestamp'] < AI_CACHE_DURATION):
-                            
-                            # ✅ CACHE DAN OLISH
-                            ai_approval = ai_trailing_cache[cache_key]['approval']
-                            logger.debug(f"🤖 {asset_name} - AI qaror cache dan olindi")
-                            
-                        else:
-                            # ✅ YANGI SO'ROV YUBORISH
-                            try:
-                                ai_approval = await get_ai_trailing_approval(
-                                    asset_name,
-                                    direction,
-                                    open_price,
-                                    current_price,
-                                    price_diff
-                                )
-                                
-                                # ✅ CACHE GA SAQLASH
-                                ai_trailing_cache[cache_key] = {
-                                    'approval': ai_approval,
-                                    'timestamp': current_time
-                                }
-                                logger.debug(f"🤖 {asset_name} - Yangi AI so'rovi yuborildi")
-                                
-                            except Exception as e:
-                                logger.error(f"🤖 AI so'rovida xato: {e}")
-                                # ✅ FALLBACK: Oddiy trailing stop
-                                should_close = price_diff >= trailing_percent
-                                close_reason = f"AI xato: Oddiy trailing {trailing_percent*100:.2f}%"
-                                ai_approval = {"decision": "REJECT", "reason": f"API xato: {e}"}
-                        
-                        # ✅ AI QARORINI QAYTA ISHLASH (faqat ai_approval mavjud bo'lsa)
-                        if ai_approval:
-                            should_close = ai_approval.get("decision") == "APPROVE"
-                            close_reason = f"AI trailing: {ai_approval.get('reason', '')}"
-                        else:
-                            # Agar ai_approval hali ham None bo'lsa, oddiy trailing stop ishlatamiz
-                            should_close = price_diff >= trailing_percent
-                            close_reason = f"Trailing stop: {trailing_percent*100:.2f}%"
+                    logger.info(f"🎯 AI TRAILING BLOKIGA KIRDI: {asset_name}")
 
+                    current_time = time.time()
+
+
+                    
+                    # Har 2 daqiqada bir AI so'rovi
+                    last_ai_check = ai_trailing_positions.get(deal_id, {}).get('last_ai_check', 0)
+
+                    logger.info(f"⏰ DEBUG: {asset_name} | Last check: {last_ai_check} | Current: {current_time} | Diff: {current_time - last_ai_check}")
+                    if current_time - last_ai_check < 120:
+                        logger.info(f"⏰ {asset_name} - 2 daqiqa o'tmagan, keyingi loopda")
+                        continue
+
+                    logger.info(f"🚀 {asset_name} - AI SO'ROVI BOSHLANMOQDA...")
+                    
+                    net_profit = 0
+                    should_close = False
+                    close_reason = ""
+                    ai_decision = {} 
+
+
+                    try:
+                        # Indicators ni olish
+                        historical_prices = await api.get_historical_prices(epic, "MINUTE", 30)
+                        indicators = calculate_indicators(historical_prices) if historical_prices else {}
+                        
+                        # Savdo xarajatlarini hisoblash
+                        trading_costs = calculate_trading_costs(current_prices, direction)
+                        
+                        # NET profit hisoblash
+                        current_profit = (current_price - open_price) / open_price if direction == "BUY" else (open_price - current_price) / open_price
+                        net_profit = current_profit - trading_costs["total_entry_cost"]
+                        
+                        # Dynamic AI qarori
+                        ai_decision = await get_dynamic_ai_trailing_decision(
+                            asset_name, direction, open_price, current_price, indicators, deal_id, current_prices
+                        )
+                        
+                        # Position ma'lumotlarini yangilash
+                        ai_trailing_positions[deal_id] = {
+                            'last_ai_check': current_time,
+                            'current_tp': ai_decision.get('take_profit_price'),
+                            'net_tp': ai_decision.get('net_take_profit_percent'),
+                            'confidence': ai_decision.get('confidence')
+                        }
+                        
+                        # AI qarorni bajarish
+                        if ai_decision.get("action") == "CLOSE":
+                            should_close = True
+                            close_reason = f"AI Dynamic: {ai_decision.get('reason', '')}"
+                            logger.info(f"🤖 AI CLOSE: {asset_name} | NET: {net_profit*100:+.2f}%")
+                        else:
+                            should_close = False
+                            gross_tp = ai_decision.get('take_profit_percent', 0)
+                            net_tp = ai_decision.get('net_take_profit_percent', 0)
+                            confidence = ai_decision.get('confidence', 0)
+                            logger.info(f"🤖 AI HOLD: {asset_name} | Joriy NET: {net_profit*100:+.2f}% | TP: {gross_tp:.1f}% (NET: {net_tp:.1f}%) | Ishonch: {confidence:.0f}%")
+                            
+                    except Exception as e:
+                        logger.error(f"🤖 Dynamic AI trailing xato: {e}")
+                        ai_decision = {"action": "FALLBACK"}
+                        should_close = price_diff >= trailing_percent
+                        close_reason = f"AI xato: Oddiy trailing {trailing_percent*100:.2f}%"
+                        logger.info(f"🤖 AI FALLBACK: {asset_name} | Oddiy trailing: {should_close}")
+
+                # ✅ ODDIY TRAILING STOP (MNL/AUTO/TEST) - AVVALGIDEK O'ZGARMASIN
                 else:
-                    # ✅ ODDIY TRAILING STOP (AUTO/MNL)
                     should_close = price_diff >= trailing_percent
                     close_reason = f"Trailing stop: {trailing_percent*100:.2f}%"
 
-                # ✅ YANGI: BATAFSIL LOGLAR
+                # ✅ YANGI LOG - NET profit bilan
                 if trailing_mode == "AI" and use_ai_trailing:
-                    logger.info(f"📊 {asset_name} - Trailing AI: Joriy {price_diff*100:.2f}%")
-                    if ai_approval:  # ✅ FIX: ai_approval mavjudligini tekshiramiz
-                        if should_close:
-                            logger.info(f"🤖 AI qaror: APPROVE - {ai_approval.get('reason', '')}")
-                        else:
-                            logger.info(f"🤖 AI qaror: REJECT - {ai_approval.get('reason', 'Foyda yetarli emas' if price_diff < MIN_PROFIT_FOR_AI else ai_approval.get('reason', ''))}")
+                    logger.info(f"📊 {asset_name} - Trailing AI: Joriy NET {net_profit*100:+.2f}%")
+                    
+                    if ai_decision.get("action") == "CLOSE":
+                        logger.info(f"🤖 AI CLOSE: {asset_name} | NET: {net_profit*100:+.2f}%")
                     else:
-                        logger.info(f"🤖 AI qaror: REJECT - AI qaror mavjud emas")
-                else:
-                    logger.info(f"📊 {asset_name} - Trailing {trailing_mode}: Joriy {price_diff*100:.2f}% < Talab {trailing_percent*100:.2f}%")
+                        gross_tp = ai_decision.get('take_profit_percent', 0)
+                        net_tp = ai_decision.get('net_take_profit_percent', 0)
+                        logger.info(f"🤖 AI HOLD: {asset_name} | Joriy NET: {net_profit*100:+.2f}% | TP: {gross_tp:.1f}% (NET: {net_tp:.1f}%)")
 
+                # ✅ SAVDO YOPISH - AVVALGIDEK
                 if should_close:
                     logger.info(f"🚨 TRAILING STOP TRIGGERED [{trailing_mode}]")
                     logger.info(f"   📊 Aktiv: {asset_name}")
                     logger.info(f"   📈 Joriy foiz: {price_diff*100:.2f}%")
-                    logger.info(f"   🎯 Talab foiz: {trailing_percent*100:.2f}%")
                     logger.info(f"   🔔 Sabab: {close_reason}")
 
                     # Pozitsiyani yopish
