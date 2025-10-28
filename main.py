@@ -1954,7 +1954,7 @@ async def handle_max_trades_count_input(update: Update, context: ContextTypes.DE
 
 
 async def _internal_hourly_report(app):
-    """Har 60 minutda chaqiriladi"""
+    """Har 60 minutda chaqiriladi (eskisi o'chadi)"""
     db, api = get_global_instances()
     if not db or not api:
         return
@@ -1963,15 +1963,30 @@ async def _internal_hourly_report(app):
     if not chat_id:
         return
 
+    # ✅ AVVALGI XABARNI O'CHIRISH
+    last_report_message_id = settings.get("last_hourly_report_message_id")
+    if last_report_message_id:
+        try:
+            await app.bot.delete_message(chat_id=chat_id, message_id=last_report_message_id)
+            logger.info("✅ Oldingi soatlik hisobot xabari o'chirildi")
+        except Exception as e:
+            logger.warning(f"Eski xabarni o'chirishda xato: {e}")
+
     open_positions = await api.get_open_positions()
     positions_count = len(open_positions) if open_positions else 0
+    
     msg = (f"🕐 Soatlik hisobot\n"
            f"⏰ Vaqt: {dt.datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%H:%M')}\n"
            f"📊 Ochiq savdolar: {positions_count} ta")
+    
     try:
-        await app.bot.send_message(chat_id, msg)
+        # ✅ YANGI XABARNI YUBORISH VA ID NI SAQLASH
+        sent_message = await app.bot.send_message(chat_id, msg)
+        settings["last_hourly_report_message_id"] = sent_message.message_id
+        await db.save_settings(settings)
     except Exception as e:
         logger.warning("Hisobot yuborilmadi: %s", e)
+
 
 def start_scheduler(app):
     scheduler = AsyncIOScheduler(timezone='Asia/Tashkent')
