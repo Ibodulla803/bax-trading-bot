@@ -86,6 +86,7 @@ DEFAULT_SETTINGS = {
     "rsi_buy_level": 35,              # RSI 35 dan pastda sotib olish
     "rsi_sell_level": 65,             # RSI 65 dan yuqorida sotish
     "dynamic_instruments_loaded": False,
+    "last_hourly_report_message_id": None
     
     # YANGI tugmalar uchun
     "trailing_manual_enabled": True,  # Trailing Stop manual ON/OFF
