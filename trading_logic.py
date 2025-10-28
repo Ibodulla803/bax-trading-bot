@@ -921,11 +921,11 @@ Focus on risk/reward ratio, technical confirmation, and market context.
 
 
 async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
-    """Har soat faol aktivlar va ochiq savdolar haqida hisobot yuborish"""
+    """Har soat faol aktivlar va ochiq savdolar haqida hisobot yuborish (eskisi o'chadi)"""
     try:
         db, api = get_global_instances()
         if not db or not api:
-            logger.warning("Soatlik hisobot: global db/api topilmadi, o‘tkazib yuborildi")
+            logger.warning("Soatlik hisobot: global db/api topilmadi, o'tkazib yuborildi")
             return
 
         settings = await db.get_settings()
@@ -933,6 +933,15 @@ async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
         
         if not chat_id:
             return
+
+        # ✅ AVVALGI XABARNI O'CHIRISH
+        last_report_message_id = settings.get("last_hourly_report_message_id")
+        if last_report_message_id:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=last_report_message_id)
+                logger.info("✅ Oldingi soatlik hisobot xabari o'chirildi")
+            except Exception as e:
+                logger.warning(f"Eski xabarni o'chirishda xato: {e}")
 
         # Ochiq pozitsiyalarni olish
         open_positions = await api.get_open_positions()
@@ -1019,16 +1028,21 @@ async def send_hourly_report(context: ContextTypes.DEFAULT_TYPE):
         message += f"\n🔢 **Jami:** {positions_count} ta ochiq savdo\n"
         message += f"⏰ **Vaqt:** {get_tashkent_time().strftime('%H:%M')}\n"
         
-        await context.bot.send_message(
+        # ✅ YANGI XABARNI YUBORISH VA ID NI SAQLASH
+        sent_message = await context.bot.send_message(
             chat_id=chat_id, 
             text=message, 
             parse_mode='Markdown'
         )
-        logger.info("✅ Soatlik hisobot yuborildi")
+        
+        # ✅ YANGI XABAR ID SINI SAQLASH
+        settings["last_hourly_report_message_id"] = sent_message.message_id
+        await db.save_settings(settings)
+        
+        logger.info("✅ Soatlik hisobot yuborildi va ID saqlandi")
 
     except Exception as e:
         logger.error(f"Soatlik hisobot yuborishda xato: {e}")
-
 
 async def execute_trade(api, asset_name, asset_id, signal, asset_settings, context):
     """
