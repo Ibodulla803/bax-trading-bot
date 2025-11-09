@@ -35,7 +35,7 @@ from config import (
     TRAILING_STOP_PERCENT_INPUT,
     STOP_LOSS_PERCENT_INPUT,
     get_trailing_mode_keyboard,  # ⬅️ YANGI IMPORT
-    get_trade_signal_keyboard    # ⬅️ YANGI IMPORT
+    get_trade_signal_keyboard,   
 )
 from trading_logic import (
     refresh_positions, 
@@ -1698,7 +1698,7 @@ async def handle_ping(request):
     return web.Response(text="Bot is running (24/7 Uptime Check)!")
 
 async def start_web_server(app: Application):
-    """Veb-serverni Render taqdim etgan PORTda ishga tushiradi va bot yopilganda o'chadi."""
+    """Veb-serverni Render taqdim etgan PORTda ishga tushiradi."""
     web_app = web.Application()
     web_app.router.add_get('/', handle_ping)
     
@@ -1706,15 +1706,13 @@ async def start_web_server(app: Application):
     runner = web.AppRunner(web_app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
-    logger.info(f"🌐 Ping Web Server http://0.0.0.0:{port} portida ishga tushirildi.")
     await site.start()
     
-    # Bot yopilganda Web serverni ham yopish uchun Event yaratamiz
-    await app.updater.start_polling() # <-- Polling ishga tushgandan keyin kutamiz
+    logger.info(f"🌐 Ping Web Server http://0.0.0.0:{port} portida ishga tushirildi.")
     
-    # Polling to'xtaganida serverni to'xtatish uchun:
-    await site.stop()
-    await runner.cleanup()
+    # ✅ Web server ishlashi uchun cheksiz kutish
+    while True:
+        await asyncio.sleep(3600)
 
 # --- REPLACE existing execute_manual_trade with this ---
 async def execute_manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2183,26 +2181,21 @@ def start_bot():
     logger.info("Bot ishga tushirildi. Chiqish uchun Ctrl+C tugmasini bosing.")
 
     try:
-        # Pollingni ASOSIY loopda ishga tushiramiz (Telegram Polling va Web Server birga ishlashi uchun)
-        # 1. Ping Serverini asinxron vazifa (coroutine) sifatida yaratamiz.
-        # 2. run_polling() Telegram pollingni ishga tushiradi va loopni boshqaradi.
+        loop = asyncio.get_event_loop()
         
-        # NOTE: run_polling() ning o'zi sinxron usulda asinxron loopni ishga tushiradi.
-        # Biz boshqa asinxron funksiyani (Ping Serverini) unga kirish uchun yaratamiz.
+        # Web server va botni birga ishga tushirish
+        loop.create_task(start_web_server(application))
         
-        # Ping serverini boshlash vazifasini yaratish uchun:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        web_server_task = loop.create_task(start_web_server(application))
-        start_scheduler(application)
-
-        application.run_polling(drop_pending_updates=True, close_loop=False)
-
+        # Bot polling ni ishga tushirish
+        application.run_polling(
+            drop_pending_updates=True,
+            close_loop=False
+        )
+        
     except KeyboardInterrupt:
         logger.info("Bot to'xtatildi (KeyboardInterrupt).")
     except Exception as e:
-        logger.error(f"Kutilmagan xato: {e}")
-        logger.error(f"Kutib turuvchi xato: {e.__class__.__name__}: {e}") # Xato turini ko'rish uchun
-        
+        logger.error(f"Kutilmagan xato: {e}")        
 
 if __name__ == "__main__":
     start_bot()
