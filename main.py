@@ -1,7 +1,7 @@
 # main.py
 import os
 import sys
-
+import signal
 # Bax papkasini import yo'liga qo'shish
 sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
 from aiohttp import web
@@ -10,6 +10,7 @@ import logging
 import datetime 
 import datetime as dt
 import pytz
+import atexit
 from aiohttp.client_exceptions import ClientConnectionError
 import re
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -304,7 +305,7 @@ async def debug_states(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Debugda xato: {str(e)}")
 @only_me
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Botni boshlash uchun /start buyrug'i."""
+    """Botni boshlash - YANGILANGAN"""
     user_id = str(update.effective_user.id)
     if 'db' not in context.user_data:
         context.user_data['db'] = InMemoryDB(user_id)
@@ -315,17 +316,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         settings = DEFAULT_SETTINGS.copy()
         settings["chat_id"] = CHAT_ID
         await db.save_settings(settings)
+    
+    # ✅ SCHEDULER NI ISHGA TUSHIRISH
+    start_scheduler(context.application)
+    
     # Global instancelarni o'rnatish
     if 'capital_api' in context.user_data:
         set_global_instances(db, context.user_data['capital_api'])
-        logger.info("✅ Global instancelar start komandasida sozlandi.")
+        logger.info("✅ Global instancelar sozlandi")
 
     await update.message.reply_text(
         "Xush kelibsiz! Botdan foydalanish uchun hisob turini tanlang:",
         reply_markup=start_menu_keyboard
     )
     return SELECT_ACCOUNT_TYPE
-
 
 async def test_epics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Barcha EPIC larni test qilish"""
@@ -1952,55 +1956,144 @@ async def handle_max_trades_count_input(update: Update, context: ContextTypes.DE
 
 
 async def _internal_hourly_report(app):
-    """Har 60 minutda chaqiriladi (eskisi o'chadi)"""
-    db, api = get_global_instances()
-    if not db or not api:
-        return
-    settings = await db.get_settings()
-    chat_id = settings.get("chat_id") or CHAT_ID
-    if not chat_id:
-        return
-
-    # ✅ AVVALGI XABARNI O'CHIRISH
-    last_report_message_id = settings.get("last_hourly_report_message_id")
-    if last_report_message_id:
-        try:
-            await app.bot.delete_message(chat_id=chat_id, message_id=last_report_message_id)
-            logger.info("✅ Oldingi soatlik hisobot xabari o'chirildi")
-        except Exception as e:
-            logger.warning(f"Eski xabarni o'chirishda xato: {e}")
-
-    open_positions = await api.get_open_positions()
-    positions_count = len(open_positions) if open_positions else 0
-    
-    msg = (f"🕐 Soatlik hisobot\n"
-           f"⏰ Vaqt: {dt.datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%H:%M')}\n"
-           f"📊 Ochiq savdolar: {positions_count} ta")
-    
+    """Soatlik hisobot - yangi versiya"""
     try:
-        # ✅ YANGI XABARNI YUBORISH VA ID NI SAQLASH
+        logger.info("🕐 Soatlik hisobot bajarilmoqda...")
+        
+        # Global instancelarni olish
+        from trading_logic import get_global_instances
+        db, api = get_global_instances()
+        
+        if not db or not api:
+            logger.warning("Soatlik hisobot: global db/api topilmadi")
+            return
+
+        settings = await db.get_settings()
+        chat_id = settings.get("chat_id") or CHAT_ID
+        
+        if not chat_id:
+            logger.warning("Soatlik hisobot: chat_id topilmadi")
+            return
+
+        # Ochiq pozitsiyalarni olish
+        open_positions = await api.get_open_positions()
+        positions_count = len(open_positions) if open_positions else 0
+        
+        msg = (f"🕐 Soatlik hisobot\n"
+               f"⏰ Vaqt: {datetime.datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%H:%M')}\n"
+               f"📊 Ochiq savdolar: {positions_count} ta")
+        
+        # ✅ AVVALGI XABARNI O'CHIRISH
+        last_report_message_id = settings.get("last_hourly_report_message_id")
+        if last_report_message_id:
+            try:
+                await app.bot.delete_message(chat_id=chat_id, message_id=last_report_message_id)
+                logger.info("✅ Oldingi soatlik hisobot xabari o'chirildi")
+            except Exception as e:
+                logger.warning(f"Eski xabarni o'chirishda xato: {e}")
+
+        # ✅ YANGI XABARNI YUBORISH
         sent_message = await app.bot.send_message(chat_id, msg)
         settings["last_hourly_report_message_id"] = sent_message.message_id
         await db.save_settings(settings)
+        
+        logger.info("✅ Soatlik hisobot muvaffaqiyatli yuborildi")
+        
     except Exception as e:
-        logger.warning("Hisobot yuborilmadi: %s", e)
+        logger.error(f"Soatlik hisobotda xato: {e}")
 
 
 def start_scheduler(app):
-    scheduler = AsyncIOScheduler(timezone='Asia/Tashkent')
-    # 25 minutda bir (server uyg‘otish)
-    scheduler.add_job(
-        lambda: asyncio.ensure_future(_internal_hourly_report(app)),
-        trigger='cron', minute='*/25', id='ping_keepalive'
-    )
-    # har soat :00 da to‘liq hisobot
-    scheduler.add_job(
-        lambda: asyncio.ensure_future(_internal_hourly_report(app)),
-        trigger='cron', minute=0, id='hourly_report'
-    )
-    scheduler.start()
-    logger.info("✅ Scheduler (async) ishga tushdi – 25 min + 60 min")
+    """Scheduler ni ishga tushirish - SODDA VERSIYA"""
+    try:
+        # Avvalgi scheduler ni to'xtatish
+        if hasattr(app, 'scheduler'):
+            try:
+                app.scheduler.shutdown(wait=False)
+            except:
+                pass
+        
+        # Yangi scheduler yaratish
+        scheduler = AsyncIOScheduler()
+        scheduler.configure(timezone=pytz.timezone('Asia/Tashkent'))
+        
+        # 25 minutda bir server uyg'otish - FAQL LOG
+        scheduler.add_job(
+            lambda: logger.info("🔄 Server uyg'otildi (25min)"),
+            'cron', minute='*/25',
+            id='keep_alive',
+            replace_existing=True
+        )
+        
+        # Har soat 0-daqiqada hisobot - ASYNC TASK YARATISH
+        scheduler.add_job(
+            lambda: asyncio.run(send_hourly_report_simple(app)),
+            'cron', minute=0,
+            id='hourly_report', 
+            replace_existing=True
+        )
+        
+        scheduler.start()
+        app.scheduler = scheduler
+        logger.info("🔄 SCHEDULER ISHGA TUSHDI - 25min + 60min")
+        
+    except Exception as e:
+        logger.error(f"❌ SCHEDULER XATOSI: {e}")
 
+async def send_hourly_report_simple(app):
+    """Soddalashtirilgan soatlik hisobot"""
+    try:
+        from trading_logic import get_global_instances
+        db, api = get_global_instances()
+        
+        if not db or not api:
+            return
+
+        settings = await db.get_settings()
+        chat_id = settings.get("chat_id") or CHAT_ID
+        
+        if not chat_id:
+            return
+
+        open_positions = await api.get_open_positions()
+        positions_count = len(open_positions) if open_positions else 0
+        
+        msg = (f"🕐 Soatlik hisobot\n"
+               f"⏰ Vaqt: {datetime.datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%H:%M')}\n"
+               f"📊 Ochiq savdolar: {positions_count} ta")
+        
+        # Eski xabarni o'chirish
+        last_report_message_id = settings.get("last_hourly_report_message_id")
+        if last_report_message_id:
+            try:
+                await app.bot.delete_message(chat_id=chat_id, message_id=last_report_message_id)
+            except Exception:
+                pass
+
+        # Yangi xabar yuborish
+        sent_message = await app.bot.send_message(chat_id, msg)
+        settings["last_hourly_report_message_id"] = sent_message.message_id
+        await db.save_settings(settings)
+        
+        logger.info("✅ Soatlik hisobot yuborildi")
+        
+    except Exception as e:
+        logger.error(f"Soatlik hisobot xatosi: {e}")
+
+
+async def keep_alive_ping(app):
+    """Server uyg'otish"""
+    try:
+        logger.info("🔄 Server uyg'otildi (25min)")
+    except Exception as e:
+        logger.error(f"Keep alive xatosi: {e}")
+
+async def send_hourly_report_wrapper(app):
+    """Soatlik hisobot wrapper"""
+    try:
+        await send_hourly_report(app)
+    except Exception as e:
+        logger.error(f"Soatlik hisobot xatosi: {e}")
 
 async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Manual savdo menyusiga qaytish."""
@@ -2026,8 +2119,26 @@ async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAUL
 
 
 
+def setup_graceful_shutdown(app):
+    """Graceful shutdown sozlash"""
+    def shutdown_handler():
+        logger.info("🛑 Bot to'xtatilmoqda...")
+        if hasattr(app, 'scheduler') and app.scheduler.running:
+            app.scheduler.shutdown(wait=False)
+            logger.info("✅ Scheduler to'xtatildi")
+    
+    atexit.register(shutdown_handler)
 
-
+async def check_scheduler_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Scheduler holatini tekshirish"""
+    if hasattr(context.application, 'scheduler'):
+        scheduler = context.application.scheduler
+        if scheduler.running:
+            await update.message.reply_text("✅ Scheduler ishlayapti")
+        else:
+            await update.message.reply_text("❌ Scheduler to'xtagan")
+    else:
+        await update.message.reply_text("❌ Scheduler topilmadi")
 
 # =====================================================================================
 # Dispatcher
@@ -2036,6 +2147,12 @@ async def back_to_manual_trade_menu(update: Update, context: ContextTypes.DEFAUL
 def start_bot():
     """Botni boshlaydi."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # ✅ GRACEFUL SHUTDOWN SOZLASH
+    setup_graceful_shutdown(application)
+
+    # ✅ SCHEDULER NI ISHGA TUSHIRISH
+    start_scheduler(application)
 
     # ✅ BOT ISHGA TUSHGANDA XABAR YUBORISH
     async def send_startup_message(application: Application):
@@ -2055,7 +2172,7 @@ def start_bot():
     # Bot ishga tushganda xabar yuborish
     application.job_queue.run_once(
         lambda ctx: send_startup_message(application),
-        when=1  # 1 soniyadan keyin
+        when=1
     )
     application.job_queue.run_repeating(
         send_hourly_report,
